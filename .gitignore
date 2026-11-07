@@ -1,0 +1,10 @@
+# Rust
+/target/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Android build outputs are ignored in android/.gitignore

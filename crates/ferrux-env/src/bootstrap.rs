@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: Apache-2.0
+//! First-run setup and bootstrap installation.
+//!
+//! [`prepare_dirs`] is real. [`install`] is a stub for milestone M3; the plan
+//! (RESEARCH.md §1.3, §11):
+//!
+//! 1. Obtain the bootstrap zip for the device ABI (bundled in the APK or
+//!    downloaded and checksum-verified), built from the `ferrux-packages` fork
+//!    with `TERMUX_APP__PACKAGE_NAME=dev.ferrux`.
+//! 2. Wipe and extract it into [`Layout::staging_prefix`], recreating the
+//!    symlinks listed in `SYMLINKS.txt` and setting `0700` on `bin/`,
+//!    `libexec/` and friends.
+//! 3. `fsync`, then atomically `rename(usr-staging, usr)`. A crash at any
+//!    point leaves either no prefix or a complete one.
+//! 4. Run second-stage setup (`$PREFIX/etc/termux/bootstrap/...`) through the
+//!    system linker with the termux-exec preload.
+
+use std::io;
+
+use crate::Layout;
+
+/// Errors from [`install`].
+#[derive(Debug)]
+pub enum InstallError {
+    /// Bootstrap installation lands in milestone M3.
+    NotImplemented,
+    Io(io::Error),
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstallError::NotImplemented => {
+                f.write_str("bootstrap installation is not implemented yet (M3)")
+            }
+            InstallError::Io(e) => write!(f, "bootstrap installation failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for InstallError {}
+
+/// Creates the directories a session needs even without a bootstrap
+/// (`$HOME`, the fallback `$TMPDIR`). Idempotent.
+pub fn prepare_dirs(layout: &Layout) -> io::Result<()> {
+    std::fs::create_dir_all(layout.home())?;
+    std::fs::create_dir_all(layout.fallback_tmp())?;
+    Ok(())
+}
+
+/// Installs a bootstrap archive into the prefix. Not implemented yet.
+pub fn install(_layout: &Layout, _archive: &std::path::Path) -> Result<(), InstallError> {
+    // TODO(M3): implement the staged extraction described in the module docs.
+    Err(InstallError::NotImplemented)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_dirs_is_idempotent() {
+        let dir =
+            std::env::temp_dir().join(format!("ferrux-bootstrap-test-{}", std::process::id()));
+        let layout = Layout::new(&dir);
+        prepare_dirs(&layout).unwrap();
+        prepare_dirs(&layout).unwrap();
+        assert!(layout.home().is_dir());
+        assert!(layout.fallback_tmp().is_dir());
+        assert!(matches!(
+            install(&layout, "x.zip".as_ref()),
+            Err(InstallError::NotImplemented)
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

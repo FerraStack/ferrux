@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/FerraStack/ferrux"
+rust-version = "1.88"
+
+[workspace.dependencies]
+alacritty_terminal = { version = "0.26", default-features = false }
+rustix = { version = "1", features = ["pty", "termios", "event", "fs", "process", "pipe", "stdio"] }
+libc = "0.2"
+log = "0.4"
+thiserror = "2"
+jni = "0.22"
+android_logger = "0.15"
+
+ferrux-term = { path = "crates/ferrux-term" }
+ferrux-pty = { path = "crates/ferrux-pty" }
+ferrux-session = { path = "crates/ferrux-session" }
+ferrux-env = { path = "crates/ferrux-env" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+panic = "unwind"
+strip = "debuginfo"
