@@ -370,6 +370,8 @@ log "09: dragging the end handle extends the selection"
 long_press $(word_xy "$LINE" select)
 expect_ui selection '^select$' "long press selected 'select'"
 expect_ui actionMode 'Copy' "action mode shown"
+# At column 0 the start handle would hang off the left edge: it flips inside (#21).
+expect_ui startHandle '^[0-9]+,[0-9]+,[0-9]+,[0-9]+:mirrored$' "start handle at column 0 is fully on screen, mirrored"
 handle="$(ui_field endHandle)"
 [ -n "$handle" ] || fail "end handle not shown"
 cw="$(cell_width)"
