@@ -10,7 +10,7 @@ package dev.ferrux.terminal
  * Selection support is optional: the defaults make a backend read-only.
  */
 interface TerminalBackend {
-    /** See [FerruxNative.snapshot] for the contract and [SnapshotLayout] for the format. */
+    /** See [TerminalNative.snapshot] for the contract and [SnapshotLayout] for the format. */
     fun snapshot(out: IntArray): Int
 
     fun sendKey(key: Int, mods: Int): Boolean
@@ -25,13 +25,13 @@ interface TerminalBackend {
 
     fun scroll(lines: Int)
 
-    /** See [FerruxNative.scrollGesture]. By default only scrolls history. */
+    /** See [TerminalNative.scrollGesture]. By default only scrolls history. */
     fun scrollGesture(lines: Int, row: Int, col: Int) = scroll(lines)
 
-    /** See [FerruxNative.mouseEvent]. By default mouse reporting is unsupported. */
+    /** See [TerminalNative.mouseEvent]. By default mouse reporting is unsupported. */
     fun mouseEvent(button: Int, action: Int, row: Int, col: Int, mods: Int): Boolean = false
 
-    /** See [FerruxNative.startSelection]. */
+    /** See [TerminalNative.startSelection]. */
     fun startSelection(kind: Int, row: Int, col: Int): Boolean = false
 
     fun updateSelection(row: Int, col: Int) = Unit
@@ -42,45 +42,45 @@ interface TerminalBackend {
 
     fun clearSelection() = Unit
 
-    /** See [FerruxNative.selectionText]. */
+    /** See [TerminalNative.selectionText]. */
     fun selectionText(): String? = null
 }
 
 /** [TerminalBackend] backed by a session in `libferrux.so`. */
 class NativeSessionBackend(val sessionId: Long) : TerminalBackend {
-    override fun snapshot(out: IntArray): Int = FerruxNative.snapshot(sessionId, out)
+    override fun snapshot(out: IntArray): Int = TerminalNative.snapshot(sessionId, out)
 
-    override fun sendKey(key: Int, mods: Int): Boolean = FerruxNative.sendKey(sessionId, key, mods)
+    override fun sendKey(key: Int, mods: Int): Boolean = TerminalNative.sendKey(sessionId, key, mods)
 
-    override fun sendText(text: String, mods: Int) = FerruxNative.sendText(sessionId, text, mods)
+    override fun sendText(text: String, mods: Int) = TerminalNative.sendText(sessionId, text, mods)
 
-    override fun paste(text: String) = FerruxNative.paste(sessionId, text)
+    override fun paste(text: String) = TerminalNative.paste(sessionId, text)
 
-    override fun write(data: ByteArray) = FerruxNative.write(sessionId, data)
+    override fun write(data: ByteArray) = TerminalNative.write(sessionId, data)
 
-    override fun resize(rows: Int, cols: Int) = FerruxNative.resize(sessionId, rows, cols)
+    override fun resize(rows: Int, cols: Int) = TerminalNative.resize(sessionId, rows, cols)
 
-    override fun scroll(lines: Int) = FerruxNative.scroll(sessionId, lines)
+    override fun scroll(lines: Int) = TerminalNative.scroll(sessionId, lines)
 
     override fun scrollGesture(lines: Int, row: Int, col: Int) =
-        FerruxNative.scrollGesture(sessionId, lines, row, col)
+        TerminalNative.scrollGesture(sessionId, lines, row, col)
 
     override fun mouseEvent(button: Int, action: Int, row: Int, col: Int, mods: Int): Boolean =
-        FerruxNative.mouseEvent(sessionId, button, action, row, col, mods)
+        TerminalNative.mouseEvent(sessionId, button, action, row, col, mods)
 
     override fun startSelection(kind: Int, row: Int, col: Int): Boolean =
-        FerruxNative.startSelection(sessionId, kind, row, col)
+        TerminalNative.startSelection(sessionId, kind, row, col)
 
-    override fun updateSelection(row: Int, col: Int) = FerruxNative.updateSelection(sessionId, row, col)
+    override fun updateSelection(row: Int, col: Int) = TerminalNative.updateSelection(sessionId, row, col)
 
     override fun setSelection(startRow: Int, startCol: Int, endRow: Int, endCol: Int) =
-        FerruxNative.setSelection(sessionId, startRow, startCol, endRow, endCol, false)
+        TerminalNative.setSelection(sessionId, startRow, startCol, endRow, endCol, false)
 
-    override fun selectAll() = FerruxNative.selectAll(sessionId)
+    override fun selectAll() = TerminalNative.selectAll(sessionId)
 
-    override fun clearSelection() = FerruxNative.clearSelection(sessionId)
+    override fun clearSelection() = TerminalNative.clearSelection(sessionId)
 
-    override fun selectionText(): String? = FerruxNative.selectionText(sessionId)
+    override fun selectionText(): String? = TerminalNative.selectionText(sessionId)
 }
 
 /**

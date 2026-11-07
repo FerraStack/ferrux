@@ -8,7 +8,8 @@ import android.content.Intent
 import android.util.Log
 import dev.ferrux.app.SessionManager
 import dev.ferrux.app.ui.ActiveTerminal
-import dev.ferrux.terminal.FerruxNative
+import dev.ferrux.app.FerruxAppNative
+import dev.ferrux.terminal.TerminalNative
 import dev.ferrux.terminal.SnapshotLayout
 import java.io.File
 
@@ -42,20 +43,20 @@ class DebugReceiver : BroadcastReceiver() {
         var cols = 0
         var offset = 0
         var text = ""
-        if (current != 0L && FerruxNative.loadError == null) {
+        if (current != 0L && FerruxAppNative.loadError == null) {
             val header = IntArray(SnapshotLayout.requiredSize(1, 1))
             var buf = header
-            var n = FerruxNative.snapshot(current, buf)
+            var n = TerminalNative.snapshot(current, buf)
             if (n < 0) {
                 buf = IntArray(-n)
-                n = FerruxNative.snapshot(current, buf)
+                n = TerminalNative.snapshot(current, buf)
             }
             if (n >= SnapshotLayout.HEADER_SIZE) {
                 rows = buf[SnapshotLayout.H_ROWS]
                 cols = buf[SnapshotLayout.H_COLS]
                 offset = buf[SnapshotLayout.H_DISPLAY_OFFSET]
             }
-            text = FerruxNative.screenText(current).orEmpty()
+            text = TerminalNative.screenText(current).orEmpty()
         }
         val dump = buildString {
             append("sessions=${sessions.size} current=$current rows=$rows cols=$cols offset=$offset")

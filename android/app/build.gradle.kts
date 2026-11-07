@@ -42,6 +42,14 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        jniLibs {
+            // libferrux.so already contains the terminal natives (ferrux-jni-core);
+            // terminal-view's standalone copy would be a second session manager.
+            excludes += "**/libferruxterm.so"
+        }
+    }
 }
 
 dependencies {

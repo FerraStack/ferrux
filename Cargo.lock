@@ -149,11 +149,10 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "ferrux-android"
 version = "0.1.0"
 dependencies = [
- "android_logger",
  "ferrux-env",
+ "ferrux-jni-core",
  "ferrux-pty",
  "ferrux-session",
- "ferrux-term",
  "jni",
  "log",
 ]
@@ -163,6 +162,19 @@ name = "ferrux-env"
 version = "0.1.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "ferrux-jni-core"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "ferrux-pty",
+ "ferrux-session",
+ "ferrux-term",
+ "jni",
+ "log",
+ "rustix",
 ]
 
 [[package]]
@@ -191,6 +203,13 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "log",
+]
+
+[[package]]
+name = "ferrux-term-jni"
+version = "0.1.0"
+dependencies = [
+ "ferrux-jni-core",
 ]
 
 [[package]]

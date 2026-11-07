@@ -65,7 +65,7 @@ jobs:
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-ndk
-      - name: Build libferrux.so
+      - name: Build libferrux.so and libferruxterm.so
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
@@ -73,20 +73,30 @@ jobs:
       - name: Check 16 KB ELF alignment
         run: |
           readelf="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          for so in android/app/src/main/jniLibs/*/libferrux.so; do
+          for so in android/app/src/main/jniLibs/*/libferrux.so android/terminal-view/src/main/jniLibs/*/libferruxterm.so; do
             ls -l "$so"
             "$readelf" -lW "$so" | awk '$1=="LOAD" { print; if ($NF != "0x4000" && $NF != "0x10000") bad=1 } END { exit bad }'
           done
       - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
       - name: assembleDebug + unit tests
         working-directory: android
-        run: ./gradlew --max-workers=4 assembleDebug testDebugUnitTest -Pferrux.skipCargo=true
+        run: ./gradlew --max-workers=4 assembleDebug testDebugUnitTest :terminal-view:publishToMavenLocal -Pferrux.skipCargo=true
       - name: Check APK contents
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
           ls -l "$apk"
           unzip -l "$apk" | grep -E 'lib/(arm64-v8a|x86_64)/libferrux.so'
+          # libferrux.so has the terminal natives; a second library would mean a
+          # second session manager (docs/REUSE.md).
+          if unzip -l "$apk" | grep libferruxterm.so; then echo "libferruxterm.so must not be in the APK"; exit 1; fi
           unzip -l "$apk" | grep -E 'res/.*\.ttf|font' | head
+      - name: Check terminal-view AAR contents
+        run: |
+          aar=$(ls ~/.m2/repository/dev/ferrux/terminal-view/*/terminal-view-*.aar)
+          ls -l $aar
+          unzip -l $aar | grep -E 'jni/arm64-v8a/libferruxterm.so'
+          unzip -l $aar | grep -E 'jni/x86_64/libferruxterm.so'
+          unzip -l $aar | grep -E 'classes.jar'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ferrux-debug-apk

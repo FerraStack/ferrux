@@ -1,2 +1,2 @@
-# JNI entry points are looked up by name from libferrux.so.
--keep class dev.ferrux.terminal.FerruxNative { native <methods>; }
+# Natives are bound by name with RegisterNatives (crates/ferrux-jni-core).
+-keep class dev.ferrux.terminal.TerminalNative { native <methods>; }

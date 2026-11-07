@@ -20,7 +20,6 @@ import androidx.compose.runtime.setValue
 import dev.ferrux.app.ui.FerruxScreen
 import dev.ferrux.app.ui.FerruxTheme
 import dev.ferrux.app.ui.NativeMissingScreen
-import dev.ferrux.terminal.FerruxNative
 import java.io.IOException
 
 class MainActivity : ComponentActivity() {
@@ -50,7 +49,7 @@ class MainActivity : ComponentActivity() {
         )
         requestNotificationPermission()
 
-        val loadError = FerruxNative.loadError
+        val loadError = FerruxAppNative.loadError
         setContent {
             FerruxTheme {
                 if (loadError != null) {
@@ -68,13 +67,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (FerruxNative.loadError == null) {
+        if (FerruxAppNative.loadError == null) {
             bindService(FerruxService.bindIntent(this), connection, Context.BIND_AUTO_CREATE)
         }
     }
 
     override fun onStop() {
-        if (FerruxNative.loadError == null) unbindService(connection)
+        if (FerruxAppNative.loadError == null) unbindService(connection)
         service = null
         super.onStop()
     }

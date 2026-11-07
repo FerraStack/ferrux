@@ -10,5 +10,6 @@ captures/
 .idea/
 .navigation/
 
-# Native libraries produced by `cargo ndk` (see app/build.gradle.kts, task cargoNdkBuild)
+# Native libraries produced by `cargo ndk` (task cargoNdkBuild in app/ and terminal-view/)
 app/src/main/jniLibs/
+terminal-view/src/main/jniLibs/

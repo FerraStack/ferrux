@@ -18,13 +18,16 @@ service.
 │ app/            MainActivity (Compose drawer, title bar, extra-keys row)      │
 │                 FerruxService (foreground service, specialUse) owning         │
 │                 SessionManager (event thread → titles, bell, exit, redraw)    │
+│                 FerruxAppNative: Ferrux-only natives (env, shell, spawn)      │
 │ terminal-view/  TerminalView: Canvas renderer, InputConnection (IME),         │
 │                 hardware keys, pinch-zoom, scrollback. No Compose deps.       │
-│                 FerruxNative: the JNI surface                                 │
+│                 TerminalNative: the terminal JNI surface (reusable)           │
 └───────────────────────────────────────┬───────────────────────────────────────┘
                                         │ JNI (snapshot as int[], key codes, events)
 ┌───────────────────────────────────────▼───────────────────────────────────────┐
-│ libferrux.so   crates/ferrux-android  thin jni 0.22 adapter                   │
+│ libferrux.so   crates/ferrux-android  JNI_OnLoad + Ferrux app natives         │
+│ crates/ferrux-jni-core terminal natives (RegisterNatives), shared manager,    │
+│                        attach-fd; no ferrux-env. Also in libferruxterm.so     │
 ├───────────────────────────────────────────────────────────────────────────────┤
 │ crates/ferrux-session  session registry, one poll(2) I/O thread, per-pid      │
 │                        waiter threads, input queues, change notifications     │
@@ -38,7 +41,9 @@ service.
 ```
 
 `ferrux-term`, `ferrux-pty` and `ferrux-session` have no Android dependencies and
-are tested on Linux. The renderer is a Kotlin `Canvas` for now; the wgpu renderer
+are tested on Linux. Other apps (Ferride, API clients) reuse the terminal through
+`terminal-view` and `ferrux-jni-core` without Ferrux's environment; see
+[docs/REUSE.md](docs/REUSE.md). The renderer is a Kotlin `Canvas` for now; the wgpu renderer
 (`ferrux-render`) is an M0 spike.
 
 ### Look and feel
