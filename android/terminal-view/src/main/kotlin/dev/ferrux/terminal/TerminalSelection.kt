@@ -373,6 +373,9 @@ internal class TerminalSelection(private val view: TerminalView) {
         /** Showing the other teardrop because the natural one would be cut off. */
         private var mirrored = false
 
+        /** How far the popup was moved to keep it inside the window. */
+        private var clampShift = 0
+
         /** Whether the teardrop points up-right (its tip at the right), like a start handle. */
         private val pointsRight: Boolean get() = isStart != mirrored
 
@@ -425,7 +428,10 @@ internal class TerminalSelection(private val view: TerminalView) {
                 mirrored = flip
                 invalidate()
             }
-            val x = hotspot - hotspotX
+            // Flipping leaves a quarter of the handle outside right at the edge: clamp too.
+            val natural = hotspot - hotspotX
+            val x = natural.coerceIn(0, maxOf(0, windowWidth - w))
+            clampShift = x - natural
             val y = windowLocation[1] + localY.roundToInt()
             if (popup.isShowing) {
                 if (x != windowX || y != windowY) popup.update(x, y, -1, -1)
@@ -443,7 +449,7 @@ internal class TerminalSelection(private val view: TerminalView) {
         /** `left,top,right,bottom` on screen, plus `:mirrored` when flipped at an edge. */
         fun screenBounds(): String {
             if (!popup.isShowing) return ""
-            val left = screenLocation[0] + localX.roundToInt() - hotspotX
+            val left = screenLocation[0] + localX.roundToInt() - hotspotX + clampShift
             val top = screenLocation[1] + localY.roundToInt()
             return "$left,$top,${left + w},${top + h}" + if (mirrored) ":mirrored" else ""
         }
