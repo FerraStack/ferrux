@@ -193,6 +193,10 @@ pub enum SpawnError {
     Fork(#[source] io::Error),
     #[error("child failed at {stage:?}: {error}")]
     Child { stage: ChildStage, error: io::Error },
+    /// A caller (e.g. a session manager) could not start the thread that
+    /// waits for the child; the child has been killed and reaped.
+    #[error("failed to start waiter thread: {0}")]
+    Thread(#[source] io::Error),
 }
 
 /// The master side of a pseudo-terminal.
