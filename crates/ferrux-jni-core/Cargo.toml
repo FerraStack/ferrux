@@ -1,0 +1,22 @@
+[package]
+name = "ferrux-jni-core"
+description = "Terminal JNI surface shared by Ferrux, Ferride and API clients (no Ferrux environment)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ferrux-term.workspace = true
+ferrux-pty.workspace = true
+ferrux-session.workspace = true
+jni.workspace = true
+log.workspace = true
+rustix.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger.workspace = true
+
+[lints]
+workspace = true

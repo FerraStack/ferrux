@@ -1,0 +1,18 @@
+[package]
+name = "ferrux-term-jni"
+description = "libferruxterm.so: terminal-only JNI library for apps embedding terminal-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ferruxterm"
+crate-type = ["cdylib"]
+
+[dependencies]
+ferrux-jni-core.workspace = true
+
+[lints]
+workspace = true

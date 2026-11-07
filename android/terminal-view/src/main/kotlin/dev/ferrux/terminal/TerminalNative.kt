@@ -2,50 +2,67 @@
 package dev.ferrux.terminal
 
 /**
- * JNI bridge to `libferrux.so` (crates/ferrux-android).
+ * The terminal natives (crates/ferrux-jni-core): sessions, input, snapshots,
+ * selection and events. Nothing here knows about Ferrux's Linux environment, so
+ * any app embedding `terminal-view` can use it (see docs/REUSE.md).
+ *
+ * The natives are bound with `RegisterNatives` by whichever library the host
+ * loads with [load]: `libferruxterm.so` (shipped with `terminal-view`) by default,
+ * or the host's own library that links `ferrux-jni-core` (Ferrux: `libferrux.so`).
  *
  * All functions are thread-safe on the Rust side. Session ids are process-global
  * and stay valid until [destroySession]; calls with an unknown id are no-ops
  * (or return 0 / null).
  */
-object FerruxNative {
+object TerminalNative {
+    /** The terminal-only library packaged with `terminal-view`. */
+    const val DEFAULT_LIBRARY = "ferruxterm"
+
+    private var loaded = false
+    private var error: Throwable? = null
+
     /**
-     * Non-null when `libferrux.so` could not be loaded (for example when the APK was
-     * built with `-Pferrux.skipCargo=true`). Every `external` call will then throw
-     * [UnsatisfiedLinkError], so callers should check this first.
+     * Loads the native library that registers these natives, once per process;
+     * later calls return the first result whatever [library] they name. Returns
+     * the load error, or null on success. Hosts with their own library (Ferrux,
+     * Ferride) call this with its name before anything else touches this object.
      */
     @JvmStatic
-    val loadError: Throwable? =
-        try {
-            System.loadLibrary("ferrux")
-            null
-        } catch (e: UnsatisfiedLinkError) {
-            e
+    @JvmOverloads
+    @Synchronized
+    fun load(library: String = DEFAULT_LIBRARY): Throwable? {
+        if (!loaded) {
+            loaded = true
+            error =
+                try {
+                    System.loadLibrary(library)
+                    null
+                } catch (e: UnsatisfiedLinkError) {
+                    e
+                }
         }
-
-    /** Initialises logging and the filesystem layout. Idempotent. */
-    @JvmStatic external fun init(filesDir: String, nativeLibDir: String)
-
-    /** Program to run for a new interactive session. */
-    @JvmStatic external fun defaultShell(): String
-
-    /** Default session environment as `KEY=VALUE` strings. */
-    @JvmStatic external fun defaultEnv(): Array<String>
+        return error
+    }
 
     /**
-     * Spawns [program] (with [args], which exclude argv[0]) on a new PTY.
+     * Non-null when the native library could not be loaded (for example when the
+     * APK was built with `-Pferrux.skipCargo=true`). Every `external` call would
+     * then throw [UnsatisfiedLinkError], so callers should check this first. Loads
+     * [DEFAULT_LIBRARY] if [load] wasn't called yet.
+     */
+    @JvmStatic
+    val loadError: Throwable?
+        get() = load()
+
+    /**
+     * Adopts a PTY master [fd] (e.g. from `ParcelFileDescriptor.detachFd()`, such as
+     * one returned by the Ferrux API) as a session without a local process. Takes
+     * ownership of [fd]; [destroySession] closes it.
      *
      * @return a session id > 0
-     * @throws java.io.IOException if the PTY or process could not be created
+     * @throws java.io.IOException if the fd can't be used as a terminal
      */
-    @JvmStatic external fun createSession(
-        program: String,
-        args: Array<String>,
-        env: Array<String>,
-        cwd: String,
-        rows: Int,
-        cols: Int,
-    ): Long
+    @JvmStatic external fun attachPty(fd: Int, rows: Int, cols: Int): Long
 
     /** Hangs up the session's process group and forgets the session. */
     @JvmStatic external fun destroySession(id: Long)

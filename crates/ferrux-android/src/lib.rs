@@ -1,92 +1,117 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `libferrux.so`: JNI entry points for `dev.ferrux.terminal.FerruxNative`.
+//! `libferrux.so`: the Ferrux app's native library.
+//!
+//! `JNI_OnLoad` binds two sets of natives with `RegisterNatives`:
+//!
+//! * the terminal natives of `ferrux-jni-core` on
+//!   `dev.ferrux.terminal.TerminalNative` (shared with other apps), and
+//! * the Ferrux app natives below on `dev.ferrux.app.FerruxAppNative`: the
+//!   Linux environment (`ferrux-env`) and spawning with it.
 //!
 //! Every function here is a thin adapter; the logic lives in [`core`] and the
-//! crates below it. Panics and JNI errors are caught by `with_env` and turned
-//! into a Java `RuntimeException`. The integer layouts are documented on
-//! [`ferrux_term::Snapshot::encode_ints`] and mirrored in the Kotlin
-//! `SnapshotLayout` / `TerminalKeys` objects.
+//! crates below it. Panics and JNI errors become a Java `RuntimeException`.
+//! See `docs/REUSE.md`.
 
 pub mod core;
 
-use jni::errors::ThrowRuntimeExAndDefault;
-use jni::objects::{JByteArray, JClass, JIntArray, JObjectArray, JString};
-use jni::strings::JNIString;
-use jni::sys::{jboolean, jint, jlong};
-use jni::{Env, EnvUnowned, jni_str};
+use std::ffi::c_void;
 
-type JResult<T> = Result<T, jni::errors::Error>;
+use ferrux_jni_core::{
+    JResult, TERMINAL_CLASS, new_string_array, register_natives, register_terminal_natives,
+    string_array, throw_io,
+};
+use jni::objects::{JClass, JObjectArray, JString};
+use jni::strings::JNIStr;
+use jni::sys::{JavaVM, jint, jlong};
+use jni::{Env, NativeMethod, jni_str, native_method};
 
-fn string_array(env: &mut Env<'_>, array: &JObjectArray<'_, JString<'_>>) -> JResult<Vec<String>> {
-    let len = array.len(env)?;
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let s = array.get_element(env, i)?;
-        out.push(s.try_to_string(env)?);
+/// The Kotlin class in the app module that declares the app natives.
+pub const APP_CLASS: &JNIStr = jni_str!("dev/ferrux/app/FerruxAppNative");
+
+/// The Ferrux app natives.
+// jni-macros 0.22.4 expands its ABI check to `AtomicBool::fetch_update`,
+// deprecated since Rust 1.99.
+#[allow(deprecated)]
+pub const APP_NATIVES: &[NativeMethod<'static>] = &[
+    native_method! {
+        static fn init(files_dir: JString, native_lib_dir: JString),
+        fn = natives::init,
+    },
+    native_method! {
+        static fn default_shell() -> JString,
+        fn = natives::default_shell,
+    },
+    native_method! {
+        static fn default_env() -> JString[],
+        fn = natives::default_env,
+    },
+    native_method! {
+        static fn create_session(
+            program: JString,
+            args: JString[],
+            environment: JString[],
+            cwd: JString,
+            rows: jint,
+            cols: jint,
+        ) -> jlong,
+        fn = natives::create_session,
+    },
+];
+
+/// # Safety
+/// Called by the JVM from `System.loadLibrary` with a valid `vm`.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void) -> jint {
+    // SAFETY: `vm` comes straight from the JVM.
+    unsafe {
+        ferrux_jni_core::on_load(vm, "ferrux", |env| {
+            register_terminal_natives(env, TERMINAL_CLASS)?;
+            register_natives(env, APP_CLASS, APP_NATIVES)
+        })
     }
-    Ok(out)
 }
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_init<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    files_dir: JString<'caller>,
-    _native_lib_dir: JString<'caller>,
-) {
-    env.with_env(|env| -> JResult<()> {
-        init_logging();
+mod natives {
+    use super::*;
+
+    pub fn init(
+        env: &mut Env<'_>,
+        _: JClass<'_>,
+        files_dir: JString<'_>,
+        _native_lib_dir: JString<'_>,
+    ) -> JResult<()> {
         let files_dir = files_dir.try_to_string(env)?;
         core::init(&files_dir);
         // TODO(M3): remember native_lib_dir for helper executables shipped as
         // lib*.so (proot loader, …).
         Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_defaultShell<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-) -> JString<'caller> {
-    env.with_env(|env| JString::from_str(env, core::default_shell()))
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_defaultEnv<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-) -> JObjectArray<'caller, JString<'caller>> {
-    env.with_env(|env| new_string_array(env, &core::default_env()))
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-fn new_string_array<'local>(
-    env: &mut Env<'local>,
-    items: &[String],
-) -> JResult<JObjectArray<'local, JString<'local>>> {
-    let array = JObjectArray::<JString>::new(env, items.len(), JString::null())?;
-    for (i, item) in items.iter().enumerate() {
-        let s = JString::from_str(env, item)?;
-        array.set_element(env, i, &s)?;
     }
-    Ok(array)
-}
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_createSession<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    program: JString<'caller>,
-    args: JObjectArray<'caller, JString<'caller>>,
-    environment: JObjectArray<'caller, JString<'caller>>,
-    cwd: JString<'caller>,
-    rows: jint,
-    cols: jint,
-) -> jlong {
-    env.with_env(|env| -> JResult<jlong> {
+    pub fn default_shell<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JString<'local>> {
+        JString::from_str(env, core::default_shell())
+    }
+
+    pub fn default_env<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JObjectArray<'local, JString<'local>>> {
+        new_string_array(env, &core::default_env())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_session(
+        env: &mut Env<'_>,
+        _: JClass<'_>,
+        program: JString<'_>,
+        args: JObjectArray<'_, JString<'_>>,
+        environment: JObjectArray<'_, JString<'_>>,
+        cwd: JString<'_>,
+        rows: jint,
+        cols: jint,
+    ) -> JResult<jlong> {
         let program = program.try_to_string(env)?;
         let args = string_array(env, &args)?;
         let environment = string_array(env, &environment)?;
@@ -96,308 +121,22 @@ pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_createSession<'call
             Ok(id) => Ok(id as jlong),
             Err(e) => {
                 log::error!("cannot start {program}: {e}");
-                env.throw_new(
-                    jni_str!("java/io/IOException"),
-                    JNIString::from(format!("{program}: {e}")),
-                )?;
+                throw_io(env, format!("{program}: {e}"))?;
                 Ok(0)
             }
         }
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_destroySession<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::destroy_session(id);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
+#[cfg(test)]
+mod tests {
+    use ferrux_jni_core::natives_check::{kotlin_externals, table};
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_write<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    data: JByteArray<'caller>,
-) {
-    env.with_env(|env| -> JResult<()> {
-        if let Some(s) = core::session(id) {
-            s.write(&env.convert_byte_array(&data)?);
-        }
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
+    const APP_NATIVE_KT: &str =
+        include_str!("../../../android/app/src/main/kotlin/dev/ferrux/app/FerruxAppNative.kt");
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_sendText<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    text: JString<'caller>,
-    mods: jint,
-) {
-    env.with_env(|env| -> JResult<()> {
-        if let Some(s) = core::session(id) {
-            let text = text.try_to_string(env)?;
-            s.send_text(
-                &text,
-                ferrux_term::Modifiers::from_bits_truncate(mods as u32),
-            );
-        }
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_sendKey<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    key: jint,
-    mods: jint,
-) -> jboolean {
-    env.with_env(|_| -> JResult<jboolean> { Ok(core::send_key(id, key, mods)) })
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_paste<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    text: JString<'caller>,
-) {
-    env.with_env(|env| -> JResult<()> {
-        if let Some(s) = core::session(id) {
-            s.paste(&text.try_to_string(env)?);
-        }
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_resize<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    rows: jint,
-    cols: jint,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::resize(id, rows, cols);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scroll<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    lines: jint,
-) {
-    env.with_env(|_| -> JResult<()> {
-        if let Some(s) = core::session(id) {
-            s.scroll(lines);
-        }
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scrollGesture<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    lines: jint,
-    row: jint,
-    col: jint,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::scroll_gesture(id, lines, row, col);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_mouseEvent<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    button: jint,
-    action: jint,
-    row: jint,
-    col: jint,
-    mods: jint,
-) -> jboolean {
-    env.with_env(|_| -> JResult<jboolean> {
-        Ok(core::mouse_event(id, button, action, row, col, mods))
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_snapshot<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    out: JIntArray<'caller>,
-) -> jint {
-    env.with_env(|env| -> JResult<jint> {
-        let capacity = out.len(env)?;
-        let mut result = Ok(());
-        let n = core::snapshot(id, capacity, |ints| result = out.set_region(env, 0, ints));
-        result?;
-        Ok(n)
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_screenText<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) -> JString<'caller> {
-    env.with_env(|env| match core::screen_text(id) {
-        Some(text) => JString::from_str(env, text),
-        // null: no such session.
-        None => Ok(JString::default()),
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_startSelection<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    kind: jint,
-    row: jint,
-    col: jint,
-) -> jboolean {
-    env.with_env(|_| -> JResult<jboolean> { Ok(core::start_selection(id, kind, row, col)) })
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_updateSelection<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    row: jint,
-    col: jint,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::update_selection(id, row, col);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_setSelection<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-    start_row: jint,
-    start_col: jint,
-    end_row: jint,
-    end_col: jint,
-    block: jboolean,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::set_selection(id, (start_row, start_col), (end_row, end_col), block);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_selectAll<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::select_all(id);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_clearSelection<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) {
-    env.with_env(|_| -> JResult<()> {
-        core::clear_selection(id);
-        Ok(())
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_selectionText<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) -> JString<'caller> {
-    env.with_env(|env| match core::selection_text(id) {
-        Some(text) => JString::from_str(env, text),
-        // null: nothing selected or no such session.
-        None => Ok(JString::default()),
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_awaitChange<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    last_seq: jlong,
-    timeout_ms: jint,
-) -> jlong {
-    env.with_env(|_| -> JResult<jlong> { Ok(core::await_change(last_seq, timeout_ms)) })
-        .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_pollEvents<'caller>(
-    mut env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    id: jlong,
-) -> JObjectArray<'caller, JString<'caller>> {
-    env.with_env(|env| match core::poll_events(id) {
-        Some(events) => new_string_array(env, &events),
-        // A null array tells Kotlin the session is gone.
-        None => Ok(JObjectArray::default()),
-    })
-    .resolve::<ThrowRuntimeExAndDefault>()
-}
-
-fn init_logging() {
-    #[cfg(target_os = "android")]
-    android_logger::init_once(
-        android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
-            .with_tag("ferrux"),
-    );
+    #[test]
+    fn app_natives_match_kotlin_externals() {
+        assert_eq!(kotlin_externals(APP_NATIVE_KT), table(super::APP_NATIVES));
+    }
 }

@@ -11,15 +11,12 @@ name = "ferrux"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ferrux-term.workspace = true
 ferrux-pty.workspace = true
 ferrux-session.workspace = true
 ferrux-env.workspace = true
+ferrux-jni-core.workspace = true
 jni.workspace = true
 log.workspace = true
-
-[target.'cfg(target_os = "android")'.dependencies]
-android_logger.workspace = true
 
 [lints]
 workspace = true

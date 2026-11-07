@@ -7,7 +7,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import dev.ferrux.terminal.FerruxNative
+import dev.ferrux.terminal.TerminalNative
 import dev.ferrux.terminal.SessionEvent
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
@@ -30,7 +30,7 @@ data class SessionInfo(
 /**
  * Kotlin-side registry of the native sessions owned by [FerruxService].
  *
- * A single daemon thread blocks in [FerruxNative.awaitChange], drains per-session
+ * A single daemon thread blocks in [TerminalNative.awaitChange], drains per-session
  * events and notifies output listeners, so views redraw only when something changed.
  */
 class SessionManager(private val context: Context) {
@@ -77,13 +77,13 @@ class SessionManager(private val context: Context) {
      * @throws java.io.IOException if spawning fails
      */
     fun create(rows: Int = 24, cols: Int = 80): Long {
-        val env = FerruxNative.defaultEnv()
+        val env = FerruxAppNative.defaultEnv()
         val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
             ?.let { File(it) } ?: File(context.filesDir, "home")
         home.mkdirs()
         // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
-        val id = FerruxNative.createSession(
-            FerruxNative.defaultShell(), emptyArray(), env, home.absolutePath, rows, cols,
+        val id = FerruxAppNative.createSession(
+            FerruxAppNative.defaultShell(), emptyArray(), env, home.absolutePath, rows, cols,
         )
         _sessions.update { it + SessionInfo(id, title = "Session ${it.size + 1}") }
         _current.value = id
@@ -98,7 +98,7 @@ class SessionManager(private val context: Context) {
     }
 
     fun kill(id: Long) {
-        FerruxNative.destroySession(id)
+        TerminalNative.destroySession(id)
         _sessions.update { list -> list.filterNot { it.id == id } }
         if (_current.value == id) _current.value = _sessions.value.lastOrNull()?.id ?: 0L
     }
@@ -119,7 +119,7 @@ class SessionManager(private val context: Context) {
         var seq = 0L
         while (running) {
             val next = try {
-                FerruxNative.awaitChange(seq, AWAIT_TIMEOUT_MS)
+                TerminalNative.awaitChange(seq, AWAIT_TIMEOUT_MS)
             } catch (e: UnsatisfiedLinkError) {
                 Log.e(FerruxApplication.TAG, "native library missing; event loop stopped", e)
                 return
@@ -132,7 +132,7 @@ class SessionManager(private val context: Context) {
     }
 
     private fun drainEvents(id: Long) {
-        val raw = FerruxNative.pollEvents(id) ?: return
+        val raw = TerminalNative.pollEvents(id) ?: return
         for (encoded in raw) {
             when (val event = SessionEvent.parse(encoded)) {
                 is SessionEvent.Title -> updateSession(id) { it.copy(title = event.title) }

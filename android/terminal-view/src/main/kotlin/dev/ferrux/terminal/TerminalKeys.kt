@@ -27,7 +27,7 @@ object TerminalKeys {
     const val MOD_CTRL = 4
     const val MOD_META = 8
 
-    // Mouse buttons and actions for [FerruxNative.mouseEvent] (`ferrux_term::mouse`).
+    // Mouse buttons and actions for [TerminalNative.mouseEvent] (`ferrux_term::mouse`).
     const val MOUSE_LEFT = 0
     const val MOUSE_MIDDLE = 1
     const val MOUSE_RIGHT = 2
@@ -39,7 +39,7 @@ object TerminalKeys {
     const val MOUSE_MOTION = 2
 }
 
-/** Layout of the IntArray filled by [FerruxNative.snapshot] (must match the Rust side). */
+/** Layout of the IntArray filled by [TerminalNative.snapshot] (must match the Rust side). */
 object SnapshotLayout {
     const val HEADER_SIZE = 10
     const val INTS_PER_CELL = 4
@@ -119,7 +119,7 @@ object SnapshotLayout {
      * 1. the combining table: `count`, then `count` × (`cellIndex, n, codepoint × n`);
      * 2. the selection record ([SELECTION_SIZE] ints, viewport rows, both ends inclusive);
      * 3. the link table: `count`, then `count` × (`startCell, endCell, n, codepoint × n`).
-     * When it doesn't fit, [FerruxNative.snapshot] returns the exact size needed.
+     * When it doesn't fit, [TerminalNative.snapshot] returns the exact size needed.
      */
     fun requiredSize(rows: Int, cols: Int): Int =
         HEADER_SIZE + rows * cols * INTS_PER_CELL + 1 + SELECTION_SIZE + 1
@@ -168,7 +168,7 @@ object SnapshotLayout {
     }
 }
 
-/** Selection kinds for [FerruxNative.startSelection] (must match `ferrux_term::SelectionKind`). */
+/** Selection kinds for [TerminalNative.startSelection] (must match `ferrux_term::SelectionKind`). */
 object SelectionKind {
     const val SIMPLE = 0
     const val WORD = 1
@@ -176,7 +176,7 @@ object SelectionKind {
     const val BLOCK = 3
 }
 
-/** A decoded entry from [FerruxNative.pollEvents]. */
+/** A decoded entry from [TerminalNative.pollEvents]. */
 sealed interface SessionEvent {
     data class Title(val title: String) : SessionEvent
     data object Bell : SessionEvent
