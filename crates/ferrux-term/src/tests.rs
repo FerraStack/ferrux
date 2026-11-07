@@ -351,6 +351,20 @@ fn select_all_includes_history() {
 }
 
 #[test]
+fn select_all_stops_at_the_last_line_with_content() {
+    let mut t = term(10, 10);
+    t.feed(b"one\r\ntwo\r\n$ ");
+    t.select_all();
+    let span = t.selection().unwrap();
+    assert_eq!((span.start, span.end), (vp(0, 0), vp(2, 9)));
+    assert_eq!(t.selection_text().as_deref(), Some("one\ntwo\n$"));
+    // Content below the cursor still counts.
+    t.feed(b"\x1b[8;1Hlow\x1b[3;3H");
+    t.select_all();
+    assert_eq!(t.selection().unwrap().end, vp(7, 9));
+}
+
+#[test]
 fn selection_stays_on_its_text_while_scrolling() {
     let mut t = term(3, 10);
     for i in 0..8 {

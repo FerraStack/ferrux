@@ -74,7 +74,7 @@ expect_ui() {
   local i v
   for i in $(seq 1 20); do
     v="$(ui_field "$1")"
-    if printf '%s' "$v" | grep -Eq -- "$2"; then
+    if printf '%s\n' "$v" | grep -Eq -- "$2"; then
       log "ok: $3 ($1=$v)"
       return 0
     fi

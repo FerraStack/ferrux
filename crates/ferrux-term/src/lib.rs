@@ -302,10 +302,17 @@ impl Terminal {
         self.term.selection = Some(selection);
     }
 
-    /// Selects everything: the scrollback history and the screen.
+    /// Selects everything: the scrollback history and the screen, down to the
+    /// last line with content (or the cursor line), not the blank rows below.
     pub fn select_all(&mut self) {
         let start = Point::new(self.term.topmost_line(), Column(0));
-        let end = Point::new(self.term.bottommost_line(), self.term.last_column());
+        let grid = self.term.grid();
+        let cursor_line = grid.cursor.point.line;
+        let mut last = self.term.bottommost_line();
+        while last > cursor_line && grid[last].is_clear() {
+            last -= 1;
+        }
+        let end = Point::new(last, self.term.last_column());
         let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
         selection.update(end, Side::Right);
         self.term.selection = Some(selection);
