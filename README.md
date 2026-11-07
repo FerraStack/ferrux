@@ -77,6 +77,10 @@ Scrolling:
   encoding), a swipe sends wheel events and a tap is a left click.
 - Mouse wheels and trackpads scroll 3 lines per notch.
 
+When a shell exits with code 0 its session closes, like a terminal window. A failed
+one (a non-zero code or a signal) stays open so its output can be read, and shows
+`[Process completed (code N) — press Enter to restart, Esc to close]`.
+
 Pinch to zoom. On a hardware keyboard, Ctrl+Alt+= and Ctrl+Alt+- also zoom. Ferrux saves the font
 size in sp, so it follows the system font scale. The terminal keeps its state while you
 switch apps.

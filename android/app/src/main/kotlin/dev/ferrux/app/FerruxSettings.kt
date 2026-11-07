@@ -7,6 +7,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +37,11 @@ class FerruxSettings private constructor(context: Context) {
     /** Terminal font size in sp, or null for the default. */
     val fontSizeSp: StateFlow<Float?> = _fontSizeSp.asStateFlow()
 
+    private val _keepExited = MutableStateFlow(KeepExited.ON_ERROR)
+
+    /** Whether a session whose process ended stays open with a restart prompt. */
+    val keepExited: StateFlow<KeepExited> = _keepExited.asStateFlow()
+
     init {
         val initial = runBlocking(Dispatchers.IO) {
             store.data.catch { e ->
@@ -55,6 +61,14 @@ class FerruxSettings private constructor(context: Context) {
 
     private fun apply(prefs: Preferences) {
         _fontSizeSp.value = prefs[FONT_SIZE_SP]
+        _keepExited.value = prefs[KEEP_EXITED]
+            ?.let { name -> KeepExited.entries.firstOrNull { it.name == name } }
+            ?: KeepExited.ON_ERROR
+    }
+
+    fun setKeepExited(value: KeepExited) {
+        _keepExited.value = value
+        scope.launch { store.edit { it[KEEP_EXITED] = value.name } }
     }
 
     fun setFontSize(sp: Float) {
@@ -64,6 +78,7 @@ class FerruxSettings private constructor(context: Context) {
 
     companion object {
         private val FONT_SIZE_SP = floatPreferencesKey("font_size_sp")
+        private val KEEP_EXITED = stringPreferencesKey("keep_exited")
 
         @Volatile private var instance: FerruxSettings? = null
 

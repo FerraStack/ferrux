@@ -69,20 +69,40 @@ class SessionManager(private val context: Context) {
      * @throws java.io.IOException if spawning fails
      */
     fun create(rows: Int = 24, cols: Int = 80): Long {
-        val env = FerruxNative.defaultEnv()
-        val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
-            ?.let { File(it) } ?: File(context.filesDir, "home")
-        home.mkdirs()
-        // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
-        val id = FerruxNative.createSession(
-            FerruxNative.defaultShell(), emptyArray(), env, home.absolutePath, rows, cols,
-        )
+        val id = spawnShell(rows, cols)
         _sessions.update { it + SessionInfo(id, title = "Session ${it.size + 1}") }
         _current.value = id
         // The event thread only drains sessions it knows about; catch anything
         // (e.g. an immediate exit) that happened before the list was updated.
         drainEvents(id)
         return id
+    }
+
+    private fun spawnShell(rows: Int, cols: Int): Long {
+        val env = FerruxNative.defaultEnv()
+        val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
+            ?.let { File(it) } ?: File(context.filesDir, "home")
+        home.mkdirs()
+        // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
+        return FerruxNative.createSession(
+            FerruxNative.defaultShell(), emptyArray(), env, home.absolutePath, rows, cols,
+        )
+    }
+
+    /**
+     * Replaces an exited session with a fresh shell in the same place in the list
+     * (same name), and shows it.
+     *
+     * @throws java.io.IOException if spawning fails
+     */
+    fun restart(id: Long, rows: Int = 24, cols: Int = 80): Long {
+        val old = _sessions.value.firstOrNull { it.id == id } ?: return 0L
+        val newId = spawnShell(rows, cols)
+        _sessions.update { list -> list.map { if (it.id == id) SessionInfo(newId, title = old.title) else it } }
+        if (_current.value == id) _current.value = newId
+        FerruxNative.destroySession(id)
+        drainEvents(newId)
+        return newId
     }
 
     fun select(id: Long) {
@@ -129,11 +149,9 @@ class SessionManager(private val context: Context) {
             when (val event = SessionEvent.parse(encoded)) {
                 is SessionEvent.Title -> updateSession(id) { it.copy(title = event.title) }
                 is SessionEvent.Exited -> {
-                    // Like closing a terminal window on `exit`: the session goes away.
-                    // TODO(M4): optionally keep failed sessions open to show their output.
                     Log.i(FerruxApplication.TAG, "session $id exited with ${event.code}")
                     updateSession(id) { it.copy(exitCode = event.code) }
-                    mainHandler.post { kill(id) }
+                    mainHandler.post { onExited(id, event.code) }
                 }
                 is SessionEvent.Bell -> _bells.tryEmit(id)
                 is SessionEvent.Clipboard -> mainHandler.post { setClipboard(event.text) }
@@ -143,6 +161,20 @@ class SessionManager(private val context: Context) {
                 }
                 null -> Unit
             }
+        }
+    }
+
+    /**
+     * Like closing a terminal window on `exit`, a session goes away when its process
+     * ends, except that (by default) a failed one stays, so its output can be read,
+     * with a prompt to restart (Enter) or close (Esc); see [ExitedSessionBackend].
+     */
+    private fun onExited(id: Long, code: Int) {
+        if (_sessions.value.none { it.id == id }) return
+        if (FerruxSettings.get(context).keepExited.value.keeps(code)) {
+            FerruxNative.printLocal(id, ExitBanner.text(code))
+        } else {
+            kill(id)
         }
     }
 

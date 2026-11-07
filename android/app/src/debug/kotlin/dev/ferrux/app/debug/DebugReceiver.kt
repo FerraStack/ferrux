@@ -59,6 +59,7 @@ class DebugReceiver : BroadcastReceiver() {
         }
         val dump = buildString {
             append("sessions=${sessions.size} current=$current rows=$rows cols=$cols offset=$offset")
+            append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
             append(" titles=").append(sessions.joinToString("|") { it.title })
             append("\n---\n")
             append(text)

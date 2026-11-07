@@ -227,6 +227,18 @@ impl Session {
         f(&mut self.lock().terminal)
     }
 
+    /// Shows `bytes` in the terminal as if the program had printed them, without
+    /// touching the pty: e.g. a status line once the program has exited.
+    /// Responses the bytes would trigger (device reports) are discarded.
+    pub fn print_local(&self, bytes: &[u8]) {
+        let mut st = self.lock();
+        st.terminal.feed(bytes);
+        st.terminal.take_responses();
+        st.terminal.scroll_to_bottom();
+        drop(st);
+        self.shared.changed();
+    }
+
     /// Takes pending UI events.
     pub fn drain_events(&self) -> Vec<SessionEvent> {
         self.lock().events.drain(..).collect()

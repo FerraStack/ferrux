@@ -129,6 +129,24 @@ fn scroll_gestures_reach_full_screen_programs() {
 }
 
 #[test]
+fn print_local_reaches_the_grid_after_exit() {
+    let mgr = SessionManager::new().unwrap();
+    let s = mgr
+        .spawn(&sh("printf bye; exit 3"), TermConfig::default())
+        .unwrap();
+    wait_for(&mgr, &s, "exit", |s| s.exit_status().is_some());
+    wait_for(&mgr, &s, "output", screen_contains("bye"));
+    let seq = mgr.change_seq();
+    s.print_local(b"\r\n\x1b[2m[done]\x1b[0m\x1b[6n");
+    assert!(mgr.change_seq() > seq, "redraw requested");
+    let snap = s.snapshot();
+    assert_eq!(snap.row_text(1), "[done]");
+    assert!(snap.cell(1, 0).flags.contains(ferrux_term::CellFlags::DIM));
+    // The device status report it triggered is not written to the dead pty.
+    assert!(s.lock().outbox.is_empty());
+}
+
+#[test]
 fn ctrl_c_interrupts_foreground_job() {
     let mgr = SessionManager::new().unwrap();
     let s = mgr

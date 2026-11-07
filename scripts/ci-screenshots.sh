@@ -511,5 +511,30 @@ expect_screen '^sessions=1 ' "a fresh process starts a new session"
 expect_screen "^sessions=1 .* cols=$cols2 " "the new session uses the saved grid size"
 expect_ui textSizeSp "^$sp2\$" "zoom persisted across a restart"
 
+log "16: a failed shell stays open with a restart prompt"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "second session"
+expect_screen '^~ \$' "second session prompt"
+type_line 'echo%sBEFORE-EXIT'
+expect_screen '^BEFORE-EXIT$' "marker line"
+type_line 'exit%s3'
+expect_screen 'Process completed \(code 3\) — press Enter to restart, Esc to close' "exit banner shown"
+expect_screen '^sessions=2 .* exits=-\|3 ' "the failed session stays open, marked exited"
+expect_screen '^BEFORE-EXIT$' "its output is still readable"
+hide_ime
+shot 15-exited
+failed="$(header_field current)"
+adb shell input keyevent KEYCODE_ENTER
+expect_screen '^sessions=2 .* exits=-\|- ' "Enter restarted the shell in place"
+[ "$(header_field current)" != "$failed" ] || fail "restart kept the old session id"
+expect_screen '^~ \$' "fresh prompt after restart"
+grid_lines | grep -q 'Process completed' && fail "the restarted session still shows the banner"
+type_line 'exit%s3'
+expect_screen 'Process completed \(code 3\)' "banner again"
+hide_ime
+adb shell input keyevent KEYCODE_ESCAPE
+expect_screen '^sessions=1 .* exits=- ' "Esc closed the failed session"
+
 check_crash
 log "all checks passed"

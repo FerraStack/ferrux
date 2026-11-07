@@ -50,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.widget.Toast
+import dev.ferrux.app.ExitedSessionBackend
 import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
@@ -57,6 +59,7 @@ import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
+import java.io.IOException
 import kotlinx.coroutines.launch
 
 /**
@@ -161,8 +164,23 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                             }
                         },
                         update = { view ->
-                            if ((view.backend as? NativeSessionBackend)?.sessionId != current.id) {
-                                view.backend = NativeSessionBackend(current.id)
+                            val exited = current.exitCode != null
+                            val shown = when (val b = view.backend) {
+                                is ExitedSessionBackend -> exited && b.sessionId == current.id
+                                is NativeSessionBackend -> !exited && b.sessionId == current.id
+                                else -> false
+                            }
+                            if (!shown) {
+                                val id = current.id
+                                view.backend = if (exited) {
+                                    ExitedSessionBackend(
+                                        id,
+                                        onRestart = { restartSession(manager, id, view) },
+                                        onClose = { manager.kill(id) },
+                                    )
+                                } else {
+                                    NativeSessionBackend(id)
+                                }
                                 view.requestFocus()
                             }
                         },
@@ -187,6 +205,15 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 },
             )
         }
+    }
+}
+
+private fun restartSession(manager: SessionManager, id: Long, view: TerminalView) {
+    try {
+        manager.restart(id)
+    } catch (e: IOException) {
+        Toast.makeText(view.context, view.context.getString(R.string.session_failed, e.message), Toast.LENGTH_LONG)
+            .show()
     }
 }
 

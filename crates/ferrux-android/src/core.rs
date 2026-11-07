@@ -154,6 +154,13 @@ pub fn snapshot(id: i64, capacity: usize, sink: impl FnOnce(&[i32])) -> i32 {
     })
 }
 
+/// Shows text in the session's terminal without sending it to the program.
+pub fn print_local(id: i64, text: &str) {
+    if let Some(s) = session(id) {
+        s.print_local(text.as_bytes());
+    }
+}
+
 /// A scroll gesture at a viewport cell; see `Session::scroll_gesture`.
 pub fn scroll_gesture(id: i64, lines: i32, row: i32, col: i32) {
     if let Some(s) = session(id) {

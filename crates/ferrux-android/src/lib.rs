@@ -217,6 +217,20 @@ pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scroll<'caller>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_printLocal<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    text: JString<'caller>,
+) {
+    env.with_env(|env| -> JResult<()> {
+        core::print_local(id, &text.try_to_string(env)?);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scrollGesture<'caller>(
     mut env: EnvUnowned<'caller>,
     _class: JClass<'caller>,

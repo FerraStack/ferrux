@@ -64,6 +64,13 @@ object FerruxNative {
 
     @JvmStatic external fun resize(id: Long, rows: Int, cols: Int)
 
+    /**
+     * Shows [text] in the session's terminal as if the program had printed it (escape
+     * sequences included), without sending anything to the program. Used for the
+     * status line of a session whose process has exited.
+     */
+    @JvmStatic external fun printLocal(id: Long, text: String)
+
     /** Scrolls the viewport; positive [lines] scroll back into history. */
     @JvmStatic external fun scroll(id: Long, lines: Int)
 
