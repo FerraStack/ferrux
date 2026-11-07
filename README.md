@@ -66,7 +66,7 @@ The tests spawn real `/bin/sh` processes through a pty and check the terminal gr
 Requirements:
 
 - JDK 21. Gradle 9.9 also starts on newer JDKs, but CI uses 21.
-- Android SDK with `platforms;android-36.1`, `build-tools;36.0.0` and
+- Android SDK with `platforms;android-37.0` (compileSdk 37; targetSdk is 36), `build-tools;36.0.0` and
   `ndk;30.0.16248370`.
 - Rust targets and cargo-ndk:
   `rustup target add aarch64-linux-android x86_64-linux-android` and
@@ -90,7 +90,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 - **android**: builds with cargo-ndk, checks 16 KB ELF alignment, runs `assembleDebug`
   and uploads the APK.
 - **screenshots** (pull requests and manual runs only): boots an API 35 emulator,
-  types a few commands and uploads PNG screenshots and logcat.
+  types a few commands and uploads PNG screenshots and logcat. On pull requests it
+  also pushes the PNGs to the `ci-screenshots` branch and posts them in a PR comment,
+  which is updated on every run.
 
 ## Roadmap
 

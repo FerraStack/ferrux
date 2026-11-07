@@ -11,9 +11,10 @@ android {
     // `namespace` is the Kotlin/R package of the code and stays fixed;
     // `applicationId` (the installed package, which defines the prefix) is configurable.
     namespace = "dev.ferrux.app"
+    // Compose 2026.09 requires compileSdk 37; targetSdk (runtime behavior) stays 36.
     compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
+        version = release(37) {
+            minorApiLevel = 0
         }
     }
     ndkVersion = "30.0.16248370"

@@ -198,7 +198,8 @@ impl Snapshot {
         for (dst, src) in head.iter_mut().zip(header) {
             *dst = src as i32;
         }
-        for (dst, cell) in body.chunks_exact_mut(Self::INTS_PER_CELL).zip(&self.cells) {
+        let (chunks, _) = body.as_chunks_mut::<{ Self::INTS_PER_CELL }>();
+        for (dst, cell) in chunks.iter_mut().zip(&self.cells) {
             let cp = if cell.ch == ' ' { 0 } else { cell.ch as u32 };
             dst[0] = cp as i32;
             dst[1] = cell.fg.to_argb() as i32;

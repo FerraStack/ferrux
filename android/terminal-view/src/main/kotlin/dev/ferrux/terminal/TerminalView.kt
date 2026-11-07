@@ -36,8 +36,8 @@ class TerminalView @JvmOverloads constructor(
 
     /** How the soft keyboard is asked to behave. Some IMEs only work well in one mode. */
     enum class ImeMode(internal val inputType: Int) {
-        /** Regular text keyboard: composition (CJK, swipe) works, autocorrect is off. */
-        TEXT(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_AUTO_CORRECT),
+        /** Regular text keyboard: composition (CJK, swipe) works; autocorrect is not requested. */
+        TEXT(InputType.TYPE_CLASS_TEXT),
 
         /** Character-at-a-time input; works around keyboards that buffer words. */
         CHAR_BASED(
