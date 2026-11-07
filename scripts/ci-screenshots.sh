@@ -104,10 +104,34 @@ hide_ime() {
 
 # --- input -------------------------------------------------------------------
 
+# wait_ime_settled: if the soft keyboard is coming up, waits (up to 5 s) until the
+# grid has shrunk and stopped changing.
+wait_ime_settled() {
+  local i prev="" rows
+  for i in $(seq 1 20); do
+    rows="$(header_field rows)"
+    if [ -n "$rows" ] && [ "$rows" -lt "${ROWS_FULL:-0}" ] && [ "$rows" = "$prev" ]; then
+      return 0
+    fi
+    prev="$rows"
+    sleep 0.25
+  done
+}
+
 # `input text` needs %s for spaces; keep shell metacharacters out (adb shell
 # passes the string through the device's sh).
+#
+# Typing makes Gboard pop up, and keystrokes injected while it animates in can
+# arrive out of order ("echo" -> "ehco"). So the first character goes alone,
+# then the rest once the keyboard has settled.
+type_text() {
+  adb shell input text "${1:0:1}"
+  wait_ime_settled
+  if [ ${#1} -gt 1 ]; then adb shell input text "${1:1}"; fi
+}
+
 type_line() {
-  adb shell input text "$1"
+  type_text "$1"
   adb shell input keyevent KEYCODE_ENTER
 }
 
@@ -222,7 +246,7 @@ expect_node 'content-desc="ESC"' 'clickable="true"'
 expect_node 'content-desc="Up"' 'clickable="true"'
 # Behavioural check: CTRL applies to exactly the next key. Ctrl+A moves to
 # the start of the line in mksh, then '#' (unmodified) comments the line out.
-adb shell input text 'echo%sX'
+type_text 'echo%sX'
 tap_node 'content-desc="CTRL"'
 expect_node 'content-desc="CTRL"' 'checkable="true"' 'checked="true"'
 shot 06-ctrl
