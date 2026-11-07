@@ -10,6 +10,7 @@ RUN="${2:?usage: ci-post-screenshots.sh <pr-number> <run-id>}"
 REPO="${GITHUB_REPOSITORY:?}"
 SRC="${SCREENSHOT_DIR:-screenshots}"
 BRANCH=ci-screenshots
+SHA="${HEAD_SHA:-${GITHUB_SHA:-unknown}}"
 MARKER='<!-- ferra-screenshots -->'
 DEST="pr-$PR/$RUN"
 
@@ -57,7 +58,7 @@ for png in "${pngs[@]}"; do
 done
 body="$MARKER
 ### Emulator screenshots
-API 35 emulator, commit \`${GITHUB_SHA:0:7}\`, [run $RUN]($run_url).
+API 35 emulator, commit \`${SHA:0:7}\`, [run $RUN]($run_url).
 
 $header
 $sep

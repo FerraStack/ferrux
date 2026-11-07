@@ -124,5 +124,5 @@ jobs:
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/ci-post-screenshots.sh "${{ github.event.pull_request.number }}" "${{ github.run_id }}"
