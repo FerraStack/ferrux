@@ -538,11 +538,13 @@ fn osc8_hyperlinks_are_reported_as_spans() {
             Link {
                 start: 4,
                 end: 10,
+                kind: LinkKind::Hyperlink,
                 uri: "https://ferrux.dev/a".into()
             },
             Link {
                 start: 12 + 8,
                 end: 12 + 8 + 8,
+                kind: LinkKind::Hyperlink,
                 uri: "http://b.example".into()
             },
         ]
@@ -558,14 +560,64 @@ fn osc8_hyperlinks_are_reported_as_spans() {
     s.encode_ints(&mut out).unwrap();
     let tail = &out[H + 3 * 12 * 4 + 1 + 5..];
     assert_eq!(tail[0], 2);
-    assert_eq!(&tail[1..4], &[4, 10, 20]);
-    let uri: String = tail[4..24]
+    assert_eq!(&tail[1..5], &[4, 10, 1, 20]);
+    let uri: String = tail[5..25]
         .iter()
         .map(|&c| char::from_u32(c as u32).unwrap())
         .collect();
     assert_eq!(uri, "https://ferrux.dev/a");
-    assert_eq!(&tail[24..27], &[20, 28, 16]);
-    assert_eq!(out.len(), H + 3 * 12 * 4 + 1 + 5 + 1 + 3 + 20 + 3 + 16);
+    assert_eq!(&tail[25..29], &[20, 28, 1, 16]);
+    assert_eq!(out.len(), H + 3 * 12 * 4 + 1 + 5 + 1 + 4 + 20 + 4 + 16);
+}
+
+#[test]
+fn urls_in_the_text_become_links() {
+    let mut t = term(4, 20);
+    t.feed(b"see https://ferrux.dev/docs. ok\r\n");
+    // A URL that soft-wraps onto the next row is one link.
+    t.feed(b"x https://example.com/long/path end");
+    let s = t.snapshot();
+    assert_eq!(s.links.len(), 2, "{:?}", s.links);
+    assert_eq!(
+        s.links[0],
+        Link {
+            start: 4,
+            end: 4 + 23,
+            kind: LinkKind::Url,
+            uri: "https://ferrux.dev/docs".into()
+        }
+    );
+    assert!(s.cell(1, 3).flags.contains(CellFlags::URL));
+    assert!(
+        !s.cell(1, 7).flags.contains(CellFlags::URL),
+        "the period is not part of it"
+    );
+    let wrapped = &s.links[1];
+    assert_eq!(wrapped.uri, "https://example.com/long/path");
+    assert_eq!((wrapped.start, wrapped.end), (2 * 20 + 2, 2 * 20 + 2 + 29));
+    assert_eq!(
+        s.link_at(3, 5).unwrap().uri,
+        "https://example.com/long/path"
+    );
+    assert_eq!(s.link_at(1, 9), None);
+
+    let mut out = vec![0i32; s.encoded_len()];
+    s.encode_ints(&mut out).unwrap();
+    let tail = &out[H + 4 * 20 * 4 + 1 + 5..];
+    assert_eq!(&tail[..5], &[2, 4, 27, 2, 23]);
+}
+
+#[test]
+fn osc8_text_that_looks_like_a_url_is_one_link() {
+    let mut t = term(2, 40);
+    t.feed(b"\x1b]8;;https://real.example\x07https://shown.example\x1b]8;;\x07 www.ferrux.dev");
+    let s = t.snapshot();
+    assert_eq!(s.links.len(), 2);
+    assert_eq!(s.links[0].kind, LinkKind::Hyperlink);
+    assert_eq!(s.links[0].uri, "https://real.example");
+    assert!(!s.cell(0, 0).flags.contains(CellFlags::URL));
+    assert_eq!(s.links[1].kind, LinkKind::Url);
+    assert_eq!(s.links[1].uri, "https://www.ferrux.dev");
 }
 
 #[test]

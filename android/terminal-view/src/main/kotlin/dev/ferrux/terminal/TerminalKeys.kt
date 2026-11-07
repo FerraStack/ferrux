@@ -105,6 +105,13 @@ object SnapshotLayout {
     /** Part of an OSC 8 hyperlink (see the link table). */
     const val F_HYPERLINK = 1 shl 13
 
+    /** Part of a URL found in the text (see the link table). */
+    const val F_URL = 1 shl 14
+
+    // Link kinds in the link table.
+    const val LINK_HYPERLINK = 1
+    const val LINK_URL = 2
+
     /** Ints in the selection record: `kind, startRow, startCol, endRow, endCol`. */
     const val SELECTION_SIZE = 5
 
@@ -143,7 +150,8 @@ object SnapshotLayout {
     }
 
     /** One OSC 8 hyperlink: cells [start, end) in row-major order. */
-    data class Link(val start: Int, val end: Int, val uri: String) {
+    /** A link (OSC 8 or a URL in the text): cells [start, end) in row-major order. */
+    data class Link(val start: Int, val end: Int, val kind: Int, val uri: String) {
         operator fun contains(cell: Int) = cell in start until end
     }
 
@@ -154,15 +162,16 @@ object SnapshotLayout {
         var i = offset
         val count = s[i++]
         repeat(count) {
-            if (i + 3 > n) return
+            if (i + 4 > n) return
             val start = s[i]
             val end = s[i + 1]
-            val len = s[i + 2]
-            i += 3
+            val kind = s[i + 2]
+            val len = s[i + 3]
+            i += 4
             if (len < 0 || i + len > n) return
             val uri = StringBuilder(len)
             for (k in 0 until len) uri.appendCodePoint(s[i + k])
-            out.add(Link(start, end, uri.toString()))
+            out.add(Link(start, end, kind, uri.toString()))
             i += len
         }
     }

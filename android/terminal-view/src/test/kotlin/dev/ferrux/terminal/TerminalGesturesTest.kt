@@ -144,7 +144,7 @@ class SnapshotLayoutTest {
     fun truncatedSnapshotsAreRejected() {
         val s = snapshot(1, 0, 5, 1) // claims 5 marks but has 1
         assertEquals(-1, SnapshotLayout.selectionOffset(s, 1, 2, s.size))
-        val links = mutableListOf(SnapshotLayout.Link(0, 1, "stale"))
+        val links = mutableListOf(SnapshotLayout.Link(0, 1, SnapshotLayout.LINK_URL, "stale"))
         SnapshotLayout.readLinks(s, -1, s.size, links)
         assertTrue(links.isEmpty())
     }
@@ -153,11 +153,11 @@ class SnapshotLayoutTest {
     fun decodesLinks() {
         val uri = "https://ferrux.dev/🦀"
         val cps = uri.codePoints().toArray()
-        val s = snapshot(0, 0, 0, 0, 0, 0, 1, 0, 2, cps.size, *cps)
+        val s = snapshot(0, 0, 0, 0, 0, 0, 1, 0, 2, SnapshotLayout.LINK_HYPERLINK, cps.size, *cps)
         val off = SnapshotLayout.selectionOffset(s, 1, 2, s.size)
         val links = mutableListOf<SnapshotLayout.Link>()
         SnapshotLayout.readLinks(s, off + SnapshotLayout.SELECTION_SIZE, s.size, links)
-        assertEquals(listOf(SnapshotLayout.Link(0, 2, uri)), links)
+        assertEquals(listOf(SnapshotLayout.Link(0, 2, SnapshotLayout.LINK_HYPERLINK, uri)), links)
         assertTrue(1 in links[0])
         assertFalse(2 in links[0])
     }

@@ -35,6 +35,16 @@ import kotlin.math.roundToInt
  * through the [TerminalBackend], so it stays on its text while the view scrolls
  * and disappears when the program overwrites it.
  */
+/** Opens [uri] in another app (callers check [TerminalLinks.isOpenable] first). */
+internal fun openUri(view: View, uri: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        view.context.startActivity(intent)
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(view.context, R.string.ferrux_terminal_no_app, Toast.LENGTH_SHORT).show()
+    }
+}
+
 internal class TerminalSelection(private val view: TerminalView) {
     /** Selection mode is on: the handles and the action mode are shown. */
     var isActive = false
@@ -259,14 +269,7 @@ internal class TerminalSelection(private val view: TerminalView) {
         }
     }
 
-    private fun open(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try {
-            view.context.startActivity(intent)
-        } catch (e: ActivityNotFoundException) {
-            Toast.makeText(view.context, R.string.ferrux_terminal_no_app, Toast.LENGTH_SHORT).show()
-        }
-    }
+    private fun open(url: String) = openUri(view, url)
 
     /** An OSC 8 link where the selection starts, else the selected text if it is one URL. */
     fun linkForSelection(): String? {

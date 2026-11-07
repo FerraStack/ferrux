@@ -37,6 +37,9 @@ impl CellFlags {
     pub const SELECTED: Self = Self(1 << 12);
     /// Part of an OSC 8 hyperlink; see [`Snapshot::links`].
     pub const HYPERLINK: Self = Self(1 << 13);
+    /// Part of a URL found in the text (not an OSC 8 link); see
+    /// [`Snapshot::links`].
+    pub const URL: Self = Self(1 << 14);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -155,19 +158,40 @@ pub struct Snapshot {
     /// The selection, in viewport coordinates. Its ends may lie outside the
     /// viewport when the selected text is scrolled out of view.
     pub selection: Option<SelectionSpan>,
-    /// OSC 8 hyperlinks on screen, sorted by cell index. Their cells are
-    /// flagged [`CellFlags::HYPERLINK`].
+    /// Links on screen, sorted by cell index and never overlapping: OSC 8
+    /// hyperlinks (cells flagged [`CellFlags::HYPERLINK`]) and URLs found in
+    /// the text ([`CellFlags::URL`]).
     pub links: Vec<Link>,
 }
 
+/// Where a [`Link`] comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinkKind {
+    /// An explicit OSC 8 hyperlink; its text may differ from its URI.
+    Hyperlink,
+    /// A URL recognised in the text.
+    Url,
+}
+
+impl LinkKind {
+    /// FFI code: 1 OSC 8 hyperlink, 2 URL found in the text.
+    pub const fn code(self) -> u32 {
+        match self {
+            LinkKind::Hyperlink => 1,
+            LinkKind::Url => 2,
+        }
+    }
+}
+
 /// A run of consecutive cells (row-major, possibly across rows) that belong
-/// to the same OSC 8 hyperlink.
+/// to the same link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     /// First cell, a row-major index into [`Snapshot::cells`].
     pub start: usize,
     /// One past the last cell.
     pub end: usize,
+    pub kind: LinkKind,
     pub uri: String,
 }
 
@@ -192,10 +216,11 @@ impl Snapshot {
             .unwrap_or(&[])
     }
 
-    /// The hyperlink covering the cell at `(row, col)`, if any.
+    /// The link covering the cell at `(row, col)`, if any.
     pub fn link_at(&self, row: usize, col: usize) -> Option<&Link> {
         let index = row * self.cols + col;
-        if !self.cells.get(index)?.flags.contains(CellFlags::HYPERLINK) {
+        let flags = self.cells.get(index)?.flags;
+        if !flags.contains(CellFlags::HYPERLINK) && !flags.contains(CellFlags::URL) {
             return None;
         }
         let i = self.links.partition_point(|l| l.end <= index);
@@ -260,7 +285,7 @@ impl Snapshot {
     /// Number of `i32`s [`Snapshot::encode_ints`] writes.
     pub fn encoded_len(&self) -> usize {
         let combining: usize = self.combining.iter().map(|c| 2 + c.chars.len()).sum();
-        let links: usize = self.links.iter().map(|l| 3 + l.uri.chars().count()).sum();
+        let links: usize = self.links.iter().map(|l| 4 + l.uri.chars().count()).sum();
         Self::HEADER_LEN
             + self.cells.len() * Self::INTS_PER_CELL
             + 1
@@ -292,9 +317,9 @@ impl Snapshot {
     ///    is 0 (none), 1 (running text) or 2 (block); rows are viewport rows
     ///    and may be negative or `>= rows` (scrolled out of view); both ends
     ///    are inclusive.
-    /// 3. Hyperlinks: `count`, followed by `count` entries of
-    ///    `start_cell, end_cell, n, codepoint × n` (the URI; `end_cell` is
-    ///    exclusive).
+    /// 3. Links: `count`, followed by `count` entries of
+    ///    `start_cell, end_cell, kind, n, codepoint × n` (the URI; `end_cell`
+    ///    is exclusive; `kind` is [`LinkKind::code`]).
     ///
     /// Returns `None` if `out` is shorter than [`Snapshot::encoded_len`].
     pub fn encode_ints(&self, out: &mut [i32]) -> Option<usize> {
@@ -352,6 +377,7 @@ impl Snapshot {
         for link in &self.links {
             push(link.start as u32);
             push(link.end as u32);
+            push(link.kind.code());
             push(link.uri.chars().count() as u32);
             for ch in link.uri.chars() {
                 push(ch as u32);
