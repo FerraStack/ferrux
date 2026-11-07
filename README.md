@@ -179,8 +179,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     drag, fling, scrollbar and jump button; arrow keys on the alternate screen; mouse
     wheel and click reporting; switching apps (same session, view, zoom and keyboard);
     a process restart (saved zoom); exited sessions (notice, drawer badge,
-    restart in the same directory, swipe to close, clean exit closes); and the
-    notification (session count, tap to open, Exit closes everything).
+    restart in the same directory, swipe to close, clean exit closes); the
+    notification (session count, tap to open, Exit closes everything, wake lock);
+    and keep screen on.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

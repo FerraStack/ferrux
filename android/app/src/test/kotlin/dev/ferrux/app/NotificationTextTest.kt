@@ -29,4 +29,13 @@ class NotificationTextTest {
         assertEquals("2 sessions · 1 exited", FerruxService.sessionSummary(res, sessions(null, 3)))
         assertEquals("1 session · 1 exited", FerruxService.sessionSummary(res, sessions(137)))
     }
+
+    @Test
+    fun mentionsTheWakeLock() {
+        assertEquals("1 session · wake lock held", FerruxService.sessionSummary(res, sessions(null), wakeLockHeld = true))
+        assertEquals(
+            "2 sessions · 1 exited · wake lock held",
+            FerruxService.sessionSummary(res, sessions(1, null), wakeLockHeld = true),
+        )
+    }
 }

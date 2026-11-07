@@ -27,4 +27,7 @@
         <item quantity="other">%1$s wants to copy %2$d characters to the clipboard</item>
     </plurals>
     <string name="clipboard_allow">Allow</string>
+    <string name="notification_wake_lock_acquire">Acquire wakelock</string>
+    <string name="notification_wake_lock_release">Release wakelock</string>
+    <string name="notification_wake_lock_held">%1$s · wake lock held</string>
 </resources>

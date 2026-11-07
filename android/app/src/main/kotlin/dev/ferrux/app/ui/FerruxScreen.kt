@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -114,6 +115,15 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     val appContext = LocalContext.current.applicationContext
     val settings = remember(appContext) { FerruxSettings.get(appContext) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
+
+    // "Keep screen on" (off by default): holds the window's KEEP_SCREEN_ON flag while
+    // the terminal is shown.
+    val keepScreenOn by settings.keepScreenOn.collectAsStateWithLifecycle()
+    val hostView = LocalView.current
+    DisposableEffect(hostView, keepScreenOn) {
+        hostView.keepScreenOn = keepScreenOn
+        onDispose { hostView.keepScreenOn = false }
+    }
 
     // The view survives switching apps, but the soft keyboard goes away with the
     // window. Bring it back on return if it was up when the user left.
