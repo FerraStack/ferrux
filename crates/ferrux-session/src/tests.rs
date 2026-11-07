@@ -57,6 +57,32 @@ fn output_reaches_the_grid_and_exit_is_reported() {
 }
 
 #[test]
+fn cwd_follows_the_process_and_local_text_reaches_only_the_screen() {
+    let mgr = SessionManager::new().unwrap();
+    let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    let script = format!(
+        "cd '{}' && printf 'ready\\r\\n' && read a && printf '<%s>' \"$a\"",
+        dir.display()
+    );
+    let s = mgr.spawn(&sh(&script), TermConfig::default()).unwrap();
+    wait_for(&mgr, &s, "ready", screen_contains("ready"));
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        assert_eq!(s.cwd().as_deref(), Some(dir.as_path()));
+    }
+    // Local text is drawn but never read by the program.
+    s.feed_local(b"[local]");
+    assert!(s.snapshot().text().contains("[local]"));
+    s.send_text("typed", Modifiers::NONE);
+    s.send_key(Key::Enter, Modifiers::NONE);
+    wait_for(&mgr, &s, "echo", screen_contains("<typed>"));
+    assert!(!s.snapshot().text().contains("<[local]"));
+    wait_for(&mgr, &s, "exit", |s| s.exit_status().is_some());
+    assert_eq!(s.cwd(), None);
+    s.feed_local(b"\r\n[done]");
+    assert!(s.snapshot().text().contains("[done]"));
+}
+
+#[test]
 fn interactive_input_and_keys() {
     let mgr = SessionManager::new().unwrap();
     let s = mgr

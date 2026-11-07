@@ -183,6 +183,18 @@ pub fn screen_text(id: i64) -> Option<String> {
     Some(session(id)?.snapshot().text())
 }
 
+/// Shows text on the session's screen without sending it to the program.
+pub fn feed_local(id: i64, text: &str) {
+    if let Some(s) = session(id) {
+        s.feed_local(text.as_bytes());
+    }
+}
+
+/// The session process's working directory while it runs.
+pub fn cwd(id: i64) -> Option<String> {
+    Some(session(id)?.cwd()?.to_string_lossy().into_owned())
+}
+
 pub fn await_change(last: i64, timeout_ms: i32) -> i64 {
     let timeout = Duration::from_millis(timeout_ms.max(0) as u64);
     manager().wait_change(last as u64, timeout) as i64
@@ -283,6 +295,9 @@ mod tests {
             events.extend(poll_events(id).unwrap());
         }
         assert_eq!(events, vec!["Tt".to_string(), "X4".to_string()]);
+        assert_eq!(cwd(id), None);
+        feed_local(id, "\r\n[bye]");
+        assert!(screen_text(id).unwrap().contains("[bye]"));
         destroy_session(id);
         assert!(poll_events(id).is_none());
         assert!(screen_text(id).is_none());

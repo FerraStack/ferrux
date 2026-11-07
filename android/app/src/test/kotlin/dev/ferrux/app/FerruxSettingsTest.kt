@@ -11,7 +11,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -50,6 +52,15 @@ class FerruxSettingsTest {
             write.join()
         }
         withSettings { assertEquals(17.5f, it.fontSizeSp.value) }
+    }
+
+    @Test
+    fun cleanExitClosesByDefaultAndTheChoiceIsKept() {
+        withSettings { settings ->
+            assertTrue(settings.closeOnCleanExit.value)
+            settings.setCloseOnCleanExit(false).join()
+        }
+        withSettings { assertFalse(it.closeOnCleanExit.value) }
     }
 
     @Test

@@ -239,6 +239,17 @@ tap_text() {
   fail "no UI node with text '$1' (see ui-missing.xml)"
 }
 
+# swipe_node <fixed-string> <from-x%> <to-x%>: a horizontal swipe across a node's
+# vertical middle, between two fractions of its width.
+swipe_node() {
+  local n b
+  n="$(wait_node "$1")"
+  b="$(printf '%s' "$n" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | grep -oE '[0-9]+' | tr '\n' ' ')"
+  set -- $b "$2" "$3"
+  local y=$(((${2} + ${4}) / 2)) w=$((${3} - ${1}))
+  adb shell input swipe $((${1} + w * ${5} / 100)) "$y" $((${1} + w * ${6} / 100)) "$y" 300
+}
+
 # --- soft keyboard -----------------------------------------------------------
 
 # Gboard pops up when `input text` starts typing. ROWS_FULL (measured at
@@ -666,6 +677,49 @@ expect_field textSizeSp "v > $size0 - 0.02 && v < $size0 + 0.02" "Ctrl+Alt+- twi
 expect_field cols "v == $cols0" "grid back to its original width"
 ROWS_FULL="$(full_rows)"
 [ "${ROWS_FULL:-0}" -ge 30 ] || fail "grid with the keyboard hidden has only '${ROWS_FULL}' rows"
+
+log "20: a failed shell stays open with a notice; Enter restarts it in the same directory"
+type_line 'cd%s/system'
+expect_screen '^/system \$' "cd /system"
+type_line 'echo%sBEFORE-EXIT'
+expect_screen '^BEFORE-EXIT$' "marker line"
+failed="$(header_field current)"
+type_line 'exit%s3'
+expect_screen '^\[Process completed \(exit code 3\)' "exit notice in the grid"
+expect_screen "^sessions=1 current=$failed .* exits=3 " "the failed session stays open, marked exited"
+expect_screen '^BEFORE-EXIT$' "its output is still readable"
+hide_ime
+shot 19-exited
+tap_node 'content-desc="Sessions"'
+wait_node 'Exited with code 3' > /dev/null
+log "ok: drawer marks the session as exited"
+shot 20-drawer-exited
+adb shell input keyevent KEYCODE_BACK # close the drawer
+sleep 1
+adb shell input keyevent KEYCODE_ENTER
+expect_field current "v != $failed" "Enter started a new shell"
+expect_screen '^sessions=1 .* exits=- ' "restarted in place, running"
+expect_screen '^/system \$' "restarted in /system"
+dump_screen | grep -q 'Process completed' && fail "the restarted session still shows the notice"
+shot 21-exit-restarted
+
+log "21: a swipe closes an exited session; a clean exit closes by default"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "second session"
+expect_screen '^~ \$' "second session prompt"
+type_line 'exit%s1'
+expect_screen '^\[Process completed \(exit code 1\)' "exit notice"
+hide_ime
+swipe_node 'content-desc="Terminal"' 80 15
+expect_screen '^sessions=1 .* exits=- ' "the swipe closed the exited session"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "another session"
+expect_screen '^~ \$' "its prompt"
+type_line 'exit'
+expect_screen '^sessions=1 .* exits=- ' "exit 0 closed the session"
+hide_ime
 
 check_crash
 log "all checks passed"

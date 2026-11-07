@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -52,6 +53,14 @@ class FerruxSettings internal constructor(
     /** What happens when a program writes the clipboard with OSC 52. */
     val clipboardWrites: StateFlow<ClipboardPolicy> = _clipboardWrites.asStateFlow()
 
+    private val _closeOnCleanExit = MutableStateFlow(true)
+
+    /**
+     * Whether a session whose shell exits with status 0 closes at once. Otherwise
+     * it stays open, like a failed one, with a "press Enter to restart" notice.
+     */
+    val closeOnCleanExit: StateFlow<Boolean> = _closeOnCleanExit.asStateFlow()
+
     init {
         apply(runBlocking(Dispatchers.IO) { store.data.orDefaults().first() })
         // Picks up later changes to the file. The first emission is the state just
@@ -71,6 +80,7 @@ class FerruxSettings internal constructor(
         _clipboardWrites.value = prefs[CLIPBOARD_WRITES]
             ?.let { name -> ClipboardPolicy.entries.firstOrNull { it.name == name } }
             ?: ClipboardPolicy.ASK
+        _closeOnCleanExit.value = prefs[CLOSE_ON_CLEAN_EXIT] ?: true
     }
 
     /** Saves the terminal font size. Returns the write, for tests. */
@@ -84,11 +94,20 @@ class FerruxSettings internal constructor(
         return scope.launch { store.edit { it[CLIPBOARD_WRITES] = value.name } }
     }
 
+    /** See [closeOnCleanExit]. Returns the write, for tests. */
+    fun setCloseOnCleanExit(close: Boolean): Job {
+        _closeOnCleanExit.value = close
+        return scope.launch { store.edit { it[CLOSE_ON_CLEAN_EXIT] = close } }
+    }
+
     companion object {
         // Keys are part of the on-disk format: never rename one, add a new key instead.
         // TODO(settings screen): offer a font size control as well.
         internal val FONT_SIZE_SP = floatPreferencesKey("font_size_sp")
         private val CLIPBOARD_WRITES = stringPreferencesKey("clipboard_writes")
+
+        // TODO(settings screen): a "Close sessions that exit cleanly" switch.
+        internal val CLOSE_ON_CLEAN_EXIT = booleanPreferencesKey("close_on_clean_exit")
 
         @Volatile private var instance: FerruxSettings? = null
 

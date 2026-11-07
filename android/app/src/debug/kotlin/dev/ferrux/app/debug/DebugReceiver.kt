@@ -68,6 +68,8 @@ class DebugReceiver : BroadcastReceiver() {
             val view = ActiveTerminal.view?.get()
             append(" view=").append(view?.let { System.identityHashCode(it) } ?: 0)
             append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
+            // Exit code per session, "-" while running.
+            append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
             append(" titles=").append(sessions.joinToString("|") { it.title })
             append("\n---\n")
             append(text)

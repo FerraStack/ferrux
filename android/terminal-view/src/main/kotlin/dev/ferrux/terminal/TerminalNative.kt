@@ -140,6 +140,12 @@ object TerminalNative {
     /** The visible screen as text (rows joined by `\n`), or null if there is no such session. */
     @JvmStatic external fun screenText(id: Long): String?
 
+    /** Shows [text] on the session's screen without sending it to the program. */
+    @JvmStatic external fun feedLocal(id: Long, text: String)
+
+    /** The session process's working directory while it runs, else null. */
+    @JvmStatic external fun cwd(id: Long): String?
+
     /**
      * Blocks until the global change counter (bumped on output or events in any
      * session) differs from [lastSeq], or [timeoutMs] elapses. Returns the current counter.

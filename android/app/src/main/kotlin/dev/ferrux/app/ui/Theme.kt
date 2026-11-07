@@ -23,6 +23,12 @@ object TerminalColors {
     val ExtraKeysBackground = Color(0xFF171B22)
     val KeyPressed = Color(0xFF2A303B)
     val KeyLabel = Color(0xFFC9D1DC)
+
+    /** Secondary text, e.g. an exited session in the drawer. */
+    val Muted = Color(0xFF8A93A3)
+
+    /** Palette red (index 1), for failures. */
+    val Error = Color(0xFFF0717A)
 }
 
 private val FerruxColors = darkColorScheme(

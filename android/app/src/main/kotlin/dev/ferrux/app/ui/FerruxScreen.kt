@@ -12,7 +12,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import kotlin.math.abs
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -59,6 +72,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.ferrux.app.ExitedSessionBackend
 import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
@@ -184,7 +198,15 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 // terminal shrinks above the keyboard and the grid is resized.
                 .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+            val closeExited by rememberUpdatedState(
+                current?.takeIf { it.exitCode != null }?.let { exited -> { manager.kill(exited.id) } },
+            )
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .swipeToClose { closeExited?.invoke() },
+            ) {
                 if (current != null) {
                     AndroidView(
                         factory = { context ->
@@ -200,8 +222,25 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                             }
                         },
                         update = { view ->
-                            if ((view.backend as? NativeSessionBackend)?.sessionId != current.id) {
-                                view.backend = NativeSessionBackend(current.id)
+                            // A running session talks to its process; an exited one turns
+                            // Enter / Esc into restart / close (see ExitedSessionBackend).
+                            val exited = current.exitCode != null
+                            val shown = when (val b = view.backend) {
+                                is ExitedSessionBackend -> exited && b.sessionId == current.id
+                                is NativeSessionBackend -> !exited && b.sessionId == current.id
+                                else -> false
+                            }
+                            if (!shown) {
+                                val id = current.id
+                                view.backend = if (exited) {
+                                    ExitedSessionBackend(
+                                        id,
+                                        onRestart = { manager.restart(id) },
+                                        onClose = { manager.kill(id) },
+                                    )
+                                } else {
+                                    NativeSessionBackend(id)
+                                }
                                 view.requestFocus()
                             }
                         },
@@ -246,6 +285,35 @@ private fun FerruxSnackbar(data: SnackbarData) {
     )
 }
 
+/**
+ * Calls [onSwipe] when a single finger sweeps sideways across the terminal (not from
+ * the left edge, which opens the drawer). Only observes: the terminal still gets
+ * every event, so scrolling and taps keep working. [onSwipe] decides whether a swipe
+ * means anything (it closes an exited session).
+ */
+private fun Modifier.swipeToClose(onSwipe: () -> Unit): Modifier = pointerInput(Unit) {
+    val distance = SWIPE_CLOSE_DISTANCE.toPx()
+    val edge = SWIPE_EDGE_WIDTH.toPx()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        if (down.position.x < edge) return@awaitEachGesture
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.size > 1) return@awaitEachGesture // pinch zoom
+            val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+            if (!change.pressed) return@awaitEachGesture
+            val d = change.position - down.position
+            if (abs(d.x) > distance && abs(d.x) > 2 * abs(d.y)) {
+                onSwipe()
+                return@awaitEachGesture
+            }
+        }
+    }
+}
+
+private val SWIPE_CLOSE_DISTANCE = 120.dp
+private val SWIPE_EDGE_WIDTH = 24.dp
+
 /** A thin strip on the left edge: swiping right from it opens the session drawer. */
 @Composable
 private fun EdgeSwipeStrip(onOpen: () -> Unit, modifier: Modifier = Modifier) {
@@ -289,10 +357,29 @@ private fun android.view.View.whenWindowFocused(action: () -> Unit) {
 private fun androidx.compose.ui.unit.Dp.px(context: android.content.Context): Int =
     (value * context.resources.displayMetrics.density).toInt()
 
+/** "exit 3" / "signal 9" pill for a session whose process ended. */
 @Composable
-private fun titleOf(session: SessionInfo): String {
-    val code = session.exitCode ?: return session.title
-    return "${session.title} (${stringResource(R.string.exited, code)})"
+private fun ExitBadge(code: Int) {
+    val signal = code > 128
+    val n = if (signal) code - 128 else code
+    val label = stringResource(if (signal) R.string.exit_badge_signal else R.string.exit_badge_code, n)
+    val description = stringResource(
+        if (signal) R.string.exited_description_signal else R.string.exited_description_code, n,
+    )
+    val color = if (code == 0) TerminalColors.Muted else TerminalColors.Error
+    Text(
+        label,
+        color = color,
+        style = MaterialTheme.typography.labelMedium,
+        fontFamily = FontFamily.Monospace,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.14f))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+            // TalkBack reads the item as "Session 2, Exited with code 3".
+            .clearAndSetSemantics { text = AnnotatedString(description) },
+    )
 }
 
 @Composable
@@ -313,13 +400,24 @@ private fun SessionDrawer(
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f, fill = false)) {
             items(sessions, key = { it.id }) { session ->
+                val exitCode = session.exitCode
                 NavigationDrawerItem(
-                    label = { Text(titleOf(session), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    label = {
+                        Text(
+                            session.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (exitCode != null) TerminalColors.Muted else Color.Unspecified,
+                        )
+                    },
                     selected = session.id == currentId,
                     onClick = { onSelect(session.id) },
                     badge = {
-                        IconButton(onClick = { onKill(session.id) }) {
-                            Icon(painterResource(R.drawable.ic_close), stringResource(R.string.kill_session))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (exitCode != null) ExitBadge(exitCode)
+                            IconButton(onClick = { onKill(session.id) }) {
+                                Icon(painterResource(R.drawable.ic_close), stringResource(R.string.kill_session))
+                            }
                         }
                     },
                     modifier = Modifier.padding(horizontal = 12.dp),
