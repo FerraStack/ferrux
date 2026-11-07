@@ -8,6 +8,8 @@
 //!   prepared **before** `fork()`; the child then calls only
 //!   async-signal-safe libc functions and raw syscalls before `execve`
 //!   (signal state is reset with raw syscalls to bypass ART's libsigchain).
+//!   All signals are blocked in the parent across `fork()`, so no inherited
+//!   handler can run in the child before that reset.
 //! * No process-global `SIGCHLD` handler and no `waitpid(-1)`: other code in
 //!   the process (ART, libraries) owns other children. Each [`Child`] is
 //!   reaped by pid.
@@ -393,16 +395,25 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
     let max_fd = max_fd();
     let use_close_range = close_range_allowed();
 
+    // Block every signal across fork() so that no inherited handler (ART's,
+    // or anything else the host process installed) can run in the child
+    // before `child_main` has reset the dispositions. The child inherits
+    // the full mask, resets dispositions, and only then unblocks; signals
+    // that arrived in between are then handled with the default action.
+    let mask = BlockAllSignals::new();
     // SAFETY: fork() in a multi-threaded process is sound as long as the child
     // only calls async-signal-safe functions until execve. `child_main` obeys
     // that: all allocation happened above.
     let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(SpawnError::Fork(io::Error::last_os_error()));
-    }
     if pid == 0 {
         // SAFETY: we are the freshly forked child.
         unsafe { child_main(&prepared, err_write.as_raw_fd(), max_fd, use_close_range) }
+    }
+    let fork_error = io::Error::last_os_error();
+    // Restore the parent's mask (on success and on failure alike).
+    drop(mask);
+    if pid < 0 {
+        return Err(SpawnError::Fork(fork_error));
     }
     drop(err_write);
 
@@ -432,6 +443,42 @@ fn open_master(size: WinSize) -> io::Result<OwnedFd> {
     termios::tcsetattr(&master, OptionalActions::Now, &t)?;
     termios::tcsetwinsize(&master, size.to_winsize())?;
     Ok(master)
+}
+
+/// Blocks all signals in the calling thread until dropped, then restores the
+/// previous mask.
+///
+/// Goes through `pthread_sigmask`, so on Android ART's libsigchain keeps the
+/// signals it has claimed (synchronous faults such as `SIGSEGV`) unblocked;
+/// those cannot usefully be blocked anyway, and the child resets their
+/// handlers before anything could raise them.
+struct BlockAllSignals {
+    old: libc::sigset_t,
+}
+
+impl BlockAllSignals {
+    fn new() -> Self {
+        // SAFETY: sigset_t is plain data; both sets are initialised by
+        // sigfillset/pthread_sigmask before use.
+        unsafe {
+            let mut all: libc::sigset_t = std::mem::zeroed();
+            let mut old: libc::sigset_t = std::mem::zeroed();
+            libc::sigfillset(&mut all);
+            // Cannot fail with SIG_SETMASK and valid pointers.
+            libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut old);
+            Self { old }
+        }
+    }
+}
+
+impl Drop for BlockAllSignals {
+    fn drop(&mut self) {
+        // SAFETY: restores the mask saved in `new`; `spawn` creates and
+        // drops the guard on the same thread.
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &self.old, std::ptr::null_mut());
+        }
+    }
 }
 
 /// Whether the child may call `close_range(2)`.
@@ -581,8 +628,13 @@ unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int, use_close
             libc::_exit(127);
         };
 
-        // ART blocks and ignores some signals; ignored dispositions and the
-        // mask survive execve, so reset both. Use raw syscalls: on Android,
+        #[cfg(test)]
+        tests::child_pre_reset_hook();
+
+        // The parent blocked every signal across fork(), so no inherited
+        // handler can run here. ART also blocks and ignores some signals;
+        // ignored dispositions and the mask survive execve, so reset both,
+        // dispositions first and the mask last. Use raw syscalls: on Android,
         // ART's libsigchain interposes sigaction()/sigprocmask() and, for
         // signals it manages, logs a stack trace (allocating, taking locks)
         // which can deadlock in a forked child. An all-zero kernel
