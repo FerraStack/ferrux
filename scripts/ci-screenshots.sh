@@ -515,5 +515,27 @@ shot 14-osc52-ask
 tap_text Allow
 expect_ui clipboard '^OSC52-OK$' "Allow copied the program's text"
 
+log "18: URLs are detected; tapping a link offers Open link / Copy link"
+type_line 'clear'
+type_line 'echo%svisit%shttps://ferrux.dev/tap%snow'
+expect_screen '^visit https://ferrux.dev/tap now$' "URL line"
+hide_ime
+expect_ui links '=https://ferrux\.dev/tap' "the URL is in the snapshot's links"
+adb shell input tap $(word_xy '^visit https' 'https://ferrux.dev/tap')
+expect_ui linkMenu '^Open link\|Copy link$' "tapping the URL opened the link menu"
+expect_ui linkMenuUri '^https://ferrux\.dev/tap$' "for that URL"
+sleep 1
+shot 17-link-tap
+tap_text 'Copy link'
+expect_ui clipboard '^https://ferrux\.dev/tap$' "Copy link copied the URL"
+expect_ui linkMenu '^$' "the menu closed"
+type_line 'sh%slinks.sh'
+expect_screen '^links ok$' "hyperlink script ran"
+hide_ime
+adb shell input tap $(word_xy '^Ferrux docs here$' Ferrux)
+expect_ui linkMenuUri '^https://ferrux\.dev/docs$' "an OSC 8 link offers its target, not its text"
+adb shell input tap $(cell_xy "$(($(ui_field rows) - 2))" 10)
+expect_ui linkMenu '^$' "a tap elsewhere closed the menu"
+
 check_crash
 log "all checks passed"

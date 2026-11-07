@@ -63,7 +63,10 @@ Selecting text works like in a text field:
   copies and Ctrl+Shift+V pastes.
 - Tap or press Back to end the selection.
 
-OSC 8 hyperlinks get a faint underline.
+Links get a faint underline: OSC 8 hyperlinks, and URLs found in the output (`http(s)`, `ftp`,
+`ssh`, `file`, `mailto` and `www.`). Ferrux reads URLs across wrapped lines and leaves out
+sentence punctuation and unbalanced brackets. Tap a link for Open link (safe schemes only)
+and Copy link. For an OSC 8 link the menu shows its target, not its text.
 
 Scrolling:
 

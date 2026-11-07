@@ -4,6 +4,7 @@
 <resources>
     <string name="ferrux_terminal_share">Share</string>
     <string name="ferrux_terminal_open_link">Open link</string>
+    <string name="ferrux_terminal_copy_link">Copy link</string>
     <string name="ferrux_terminal_copied">Copied</string>
     <string name="ferrux_terminal_no_app">No app can open this</string>
 </resources>

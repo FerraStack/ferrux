@@ -19,6 +19,7 @@ pub mod keys;
 pub mod mouse;
 pub mod selection;
 pub mod snapshot;
+pub mod urls;
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -35,7 +36,9 @@ pub use color::{Palette, Rgb};
 pub use keys::{Key, KeyMode, Modifiers};
 pub use mouse::{MouseAction, MouseButton, MouseMode};
 pub use selection::{SelectionKind, SelectionSpan, ViewPoint};
-pub use snapshot::{Cell, CellFlags, Combining, Cursor, CursorShape, Link, Modes, Snapshot};
+pub use snapshot::{
+    Cell, CellFlags, Combining, Cursor, CursorShape, Link, LinkKind, Modes, Snapshot,
+};
 
 /// Terminal dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -560,6 +563,7 @@ impl Terminal {
                         snap.links.push(Link {
                             start: index,
                             end: index + 1,
+                            kind: LinkKind::Hyperlink,
                             uri: link.uri().to_owned(),
                         });
                         last_link = Some(link);
@@ -568,6 +572,7 @@ impl Terminal {
             }
             snap.cells[index] = cell;
         }
+        detect_urls(snap);
 
         let cursor = content.cursor;
         let shape = match cursor.shape {
@@ -725,6 +730,72 @@ impl Terminal {
                 _ => {}
             }
         }
+    }
+}
+
+/// Adds the URLs found in the snapshot's text to its links, flagging their
+/// cells with [`CellFlags::URL`]. Lines are scanned whole, across soft wraps;
+/// text that is already an OSC 8 hyperlink is skipped.
+fn detect_urls(snap: &mut Snapshot) {
+    let (rows, cols) = (snap.rows, snap.cols);
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    let explicit = snap.links.len();
+    let mut chars = Vec::with_capacity(cols);
+    let mut cells = Vec::with_capacity(cols);
+    let mut row = 0;
+    while row < rows {
+        // One logical line: this row and the rows it soft-wraps into.
+        chars.clear();
+        cells.clear();
+        loop {
+            for col in 0..cols {
+                let index = row * cols + col;
+                let cell = &snap.cells[index];
+                if !cell.flags.contains(CellFlags::WIDE_SPACER) {
+                    chars.push(cell.ch);
+                    cells.push(index);
+                }
+            }
+            let wraps = snap.row_wraps(row);
+            row += 1;
+            if !wraps || row >= rows {
+                break;
+            }
+        }
+        // Cheap pre-check: every URL prefix has a ':' or starts with "www.".
+        if !chars.iter().any(|&c| c == ':' || c == '.') {
+            continue;
+        }
+        for url in urls::find_urls(&chars) {
+            let first = cells[url.range.start];
+            let last = cells[url.range.end - 1];
+            let end = last
+                + if snap.cells[last].flags.contains(CellFlags::WIDE) {
+                    2
+                } else {
+                    1
+                };
+            if snap.cells[first..end]
+                .iter()
+                .any(|c| c.flags.contains(CellFlags::HYPERLINK))
+            {
+                continue;
+            }
+            for cell in &mut snap.cells[first..end] {
+                cell.flags.insert(CellFlags::URL);
+            }
+            snap.links.push(Link {
+                start: first,
+                end,
+                kind: LinkKind::Url,
+                uri: url.uri,
+            });
+        }
+    }
+    if snap.links.len() > explicit {
+        snap.links.sort_by_key(|l| l.start);
     }
 }
 

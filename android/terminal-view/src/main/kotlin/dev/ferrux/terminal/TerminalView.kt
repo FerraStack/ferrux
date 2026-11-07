@@ -329,6 +329,7 @@ class TerminalView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        linkMode?.finish()
         removeCallbacks(blinkRunnable)
         removeCallbacks(flingStep)
         scroller.forceFinished(true)
@@ -502,12 +503,15 @@ class TerminalView @JvmOverloads constructor(
         )
     }
 
-    /** The OSC 8 hyperlink at a viewport cell of the last frame, if any. */
-    internal fun linkAt(row: Int, col: Int): String? {
+    /** The link (OSC 8 or a URL in the text) at a viewport cell of the last frame. */
+    internal fun linkSpanAt(row: Int, col: Int): L.Link? {
         if (row !in 0 until frameRows || col !in 0 until frameCols) return null
         val cell = row * frameCols + col
-        return links.firstOrNull { cell in it }?.uri
+        return links.firstOrNull { cell in it }
     }
+
+    /** The URI of the link at a viewport cell of the last frame, if any. */
+    internal fun linkAt(row: Int, col: Int): String? = linkSpanAt(row, col)?.uri
 
     private fun readCombining(rows: Int, cols: Int, n: Int) {
         combining.clear()
@@ -631,15 +635,18 @@ class TerminalView @JvmOverloads constructor(
     )
 
     private fun drawDecorations(canvas: Canvas, row: Int, start: Int, end: Int, flags: Int, fg: Int) {
-        val decorations = L.F_UNDERLINE or L.F_DOUBLE_UNDERLINE or L.F_UNDERCURL or L.F_STRIKEOUT or L.F_HYPERLINK
+        val decorations = L.F_UNDERLINE or L.F_DOUBLE_UNDERLINE or L.F_UNDERCURL or L.F_STRIKEOUT or
+            L.F_HYPERLINK or L.F_URL
         if (flags and decorations == 0) return
         linePaint.color = if (flags and L.F_DIM != 0) dim(fg) else fg
         val x0 = start * cellWidth
         val x1 = end * cellWidth
         val top = row * cellHeight
         val underlineY = top + baselineOffset + linePaint.strokeWidth * 1.5f
-        if (flags and (L.F_UNDERLINE or L.F_UNDERCURL or L.F_DOUBLE_UNDERLINE) == 0 && flags and L.F_HYPERLINK != 0) {
-            // Hyperlinks get a quieter underline than SGR 4, so styled links stay distinct.
+        if (flags and (L.F_UNDERLINE or L.F_UNDERCURL or L.F_DOUBLE_UNDERLINE) == 0 &&
+            flags and (L.F_HYPERLINK or L.F_URL) != 0
+        ) {
+            // Links get a quieter underline than SGR 4, so styled links stay distinct.
             linePaint.alpha = LINK_UNDERLINE_ALPHA
             canvas.drawLine(x0, underlineY, x1, underlineY, linePaint)
             linePaint.alpha = 0xFF
@@ -760,6 +767,12 @@ class TerminalView @JvmOverloads constructor(
     /** One, two or three taps: keyboard / select word / select line. */
     private fun onTap(e: MotionEvent) {
         removeCallbacks(showKeyboardRunnable)
+        if (linkMode != null) {
+            // A tap anywhere closes the link menu.
+            linkMode?.finish()
+            tapCounter.reset()
+            return
+        }
         if (!jumpRect.isEmpty && jumpRect.contains(e.x, e.y)) {
             tapCounter.reset()
             backend?.scroll(-frameDisplayOffset)
@@ -781,6 +794,9 @@ class TerminalView @JvmOverloads constructor(
             1 -> when {
                 // A tap outside the toolbar ends selection mode, like in text fields.
                 selection.isActive -> selection.finish()
+                // A link (OSC 8 or a URL in the text): offer to open or copy it.
+                linkSpanAt(rowAt(e.y), colAt(e.x)) != null ->
+                    showLinkMenu(linkSpanAt(rowAt(e.y), colAt(e.x))!!)
                 isKeyboardShown() -> showKeyboard()
                 // Wait out a possible double tap: showing the keyboard resizes the grid,
                 // which would move the text under the second tap.
@@ -815,6 +831,67 @@ class TerminalView @JvmOverloads constructor(
         return true
     }
 
+    private var linkMode: ActionMode? = null
+    private var linkMenuTitles: List<String> = emptyList()
+    private var linkMenuUri: String? = null
+
+    /** The floating toolbar for a tapped link: Open link (safe schemes only) and Copy link. */
+    private fun showLinkMenu(link: L.Link) {
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        val uri = link.uri
+        val openable = TerminalLinks.isOpenable(uri)
+        linkMenuUri = uri
+        linkMode = startActionMode(object : ActionMode.Callback2() {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                val titles = ArrayList<String>()
+                if (openable) {
+                    val title = resources.getString(R.string.ferrux_terminal_open_link)
+                    menu.add(Menu.NONE, MENU_OPEN_LINK, 0, title).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                    titles += title
+                }
+                val copy = resources.getString(R.string.ferrux_terminal_copy_link)
+                menu.add(Menu.NONE, MENU_COPY_LINK, 1, copy).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                titles += copy
+                linkMenuTitles = titles
+                return true
+            }
+
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                mode.finish()
+                when (item.itemId) {
+                    MENU_OPEN_LINK -> openUri(this@TerminalView, uri)
+                    MENU_COPY_LINK -> context.getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText("Ferrux", uri))
+                }
+                return true
+            }
+
+            override fun onDestroyActionMode(mode: ActionMode) {
+                if (linkMode === mode) {
+                    linkMode = null
+                    linkMenuUri = null
+                    linkMenuTitles = emptyList()
+                }
+            }
+
+            override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                // The whole link, which may span rows.
+                val cols = max(1, frameCols)
+                val top = link.start / cols
+                val bottom = (link.end - 1) / cols
+                val single = top == bottom
+                outRect.set(
+                    paddingLeft + if (single) (link.start % cols * cellWidth).toInt() else 0,
+                    paddingTop + (top * cellHeight).toInt(),
+                    if (single) (paddingLeft + ((link.end - 1) % cols + 1) * cellWidth).toInt() else width - paddingRight,
+                    paddingTop + ((bottom + 1) * cellHeight).toInt(),
+                )
+            }
+        }, ActionMode.TYPE_FLOATING)
+    }
+
     /** `key=value` diagnostics for tests: grid geometry and the selection UI state. */
     fun debugState(): Map<String, String> {
         val location = IntArray(2).also(::getLocationOnScreen)
@@ -833,6 +910,8 @@ class TerminalView @JvmOverloads constructor(
             },
             "selection" to selected.replace("\\", "\\\\").replace("\n", "\\n"),
             "links" to links.joinToString("|") { "${it.start}-${it.end}=${it.uri}" },
+            "linkMenu" to if (linkMode != null) linkMenuTitles.joinToString("|") else "",
+            "linkMenuUri" to linkMenuUri.orEmpty(),
         ) + selection.debugState()
     }
 
@@ -1066,6 +1145,8 @@ class TerminalView @JvmOverloads constructor(
         private const val BLINK_INTERVAL_MS = 530L
         private const val MENU_PASTE = 1
         private const val MENU_SELECT_ALL = 2
+        private const val MENU_OPEN_LINK = 3
+        private const val MENU_COPY_LINK = 4
 
         /** Cursor colour of the default "Ferrux Night" palette (ferrux-term). */
         private const val CURSOR_COLOR = 0xFFF29E4C.toInt()
