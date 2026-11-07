@@ -14,7 +14,13 @@
     <string name="exited_description_code">Exited with code %1$d</string>
     <string name="exited_description_signal">Killed by signal %1$d</string>
     <string name="notification_channel">Terminal sessions</string>
-    <string name="notification_text">%1$d session(s) running</string>
+    <string name="notification_channel_description">Shown while terminal sessions run, so they keep running in the background. Exit closes them all.</string>
+    <plurals name="notification_sessions">
+        <item quantity="one">%d session</item>
+        <item quantity="other">%d sessions</item>
+    </plurals>
+    <!-- %1$s is the session count ("3 sessions"), %2$d how many of them have exited. -->
+    <string name="notification_sessions_exited">%1$s · %2$d exited</string>
     <string name="notification_exit">Exit</string>
     <plurals name="clipboard_request">
         <item quantity="one">%1$s wants to copy %2$d character to the clipboard</item>

@@ -250,6 +250,44 @@ swipe_node() {
   adb shell input swipe $((${1} + w * ${5} / 100)) "$y" $((${1} + w * ${6} / 100)) "$y" 300
 }
 
+# --- system UI -----------------------------------------------------------------
+
+app_focused() { adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG"; }
+
+# expect_focus <yes|no> <what>: waits up to 10 s for the app window to (not) have focus.
+expect_focus() {
+  local i
+  for i in $(seq 1 20); do
+    if app_focused; then [ "$1" = yes ] && break; else [ "$1" = no ] && break; fi
+    sleep 0.5
+  done
+  if app_focused; then [ "$1" = yes ] || fail "$2"; else [ "$1" = no ] || fail "$2"; fi
+  log "ok: $2"
+}
+
+service_running() {
+  adb shell dumpsys activity services "$PKG" | grep -q "ServiceRecord.*FerruxService"
+}
+
+# shade_node <fixed-string>: opens the notification shade and waits for a node,
+# expanding our notification if its actions are folded away.
+shade_node() {
+  local i n
+  adb shell cmd statusbar expand-notifications
+  for i in $(seq 1 20); do
+    n="$(node "$1")"
+    if [ -n "$n" ]; then
+      printf '%s' "$n"
+      return 0
+    fi
+    # Collapsed notifications hide their actions; the expand button shows them.
+    [ "$i" = 5 ] && { n="$(node 'content-desc="Expand"')"; [ -n "$n" ] && tap_bounds "$n"; }
+    sleep 1
+  done
+  ui_dump > "$OUT/ui-missing.xml"
+  fail "no notification node matching $1 (see ui-missing.xml)"
+}
+
 # --- soft keyboard -----------------------------------------------------------
 
 # Gboard pops up when `input text` starts typing. ROWS_FULL (measured at
@@ -737,6 +775,41 @@ expect_screen '^~ \$' "its prompt"
 type_line 'exit'
 expect_screen '^sessions=1 .* exits=- ' "exit 0 closed the session"
 hide_ime
+
+log "22: the notification: session count, tap to open, Exit closes everything"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "two sessions"
+expect_screen '^~ \$' "its prompt"
+hide_ime
+current2="$(header_field current)"
+adb shell input keyevent KEYCODE_HOME
+expect_focus no "app in the background"
+shade_node 'text="2 sessions"' > /dev/null
+log "ok: notification says 2 sessions"
+shade_node 'text="Exit"' > /dev/null
+log "ok: notification has an Exit action"
+sleep 1
+shot 22-notification
+tap_bounds "$(shade_node 'text="2 sessions"')"
+expect_focus yes "tapping the notification opened the app"
+expect_screen "^sessions=2 current=$current2 " "same sessions, same current session"
+tap_bounds "$(shade_node 'text="Exit"')"
+for i in $(seq 1 20); do
+  service_running || break
+  sleep 0.5
+done
+service_running && fail "the service still runs after Exit"
+log "ok: Exit stopped the service"
+adb shell cmd statusbar collapse
+expect_focus no "Exit closed the app"
+adb shell dumpsys activity activities | grep -q "ActivityRecord.*$PKG/" && fail "an Activity is still around after Exit"
+log "ok: no Activity left"
+adb shell dumpsys notification --noredact | grep -qE "NotificationRecord.*pkg=$PKG" && fail "the notification is still posted after Exit"
+log "ok: notification removed"
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_screen '^sessions=1 ' "a fresh start after Exit"
+expect_field current "v != $current2" "the old sessions are gone"
 
 check_crash
 log "all checks passed"
