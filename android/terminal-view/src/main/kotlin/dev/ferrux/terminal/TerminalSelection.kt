@@ -137,7 +137,7 @@ internal class TerminalSelection(private val view: TerminalView) {
 
     /** Scrolling moves the selection: keep the toolbar out of the way meanwhile. */
     fun onScrolled() {
-        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION)
+        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION.toLong())
     }
 
     fun onDetached() = finish(clear = false)
@@ -302,13 +302,13 @@ internal class TerminalSelection(private val view: TerminalView) {
         val (row, col) = if (handle.isStart) current[3] to current[4] else current[1] to current[2]
         anchorLine = row - view.frameDisplayOffset
         anchorCol = col
-        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION)
+        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION.toLong())
     }
 
     /** [x], [y]: where the handle's hotspot should go, in view coordinates. */
     private fun onHandleMoved(x: Float, y: Float) {
         val b = view.backend ?: return
-        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION)
+        actionMode?.hide(ActionMode.DEFAULT_HIDE_DURATION.toLong())
         val rows = view.frameRows
         val cols = view.frameCols
         if (rows <= 0 || cols <= 0) return
