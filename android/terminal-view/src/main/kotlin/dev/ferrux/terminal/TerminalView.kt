@@ -81,8 +81,8 @@ class TerminalView @JvmOverloads constructor(
             inputMethodManager.restartInput(this)
         }
 
-    /** Blink the cursor while the view is focused (a steady block otherwise). */
-    var cursorBlink: Boolean = true
+    /** Blink the cursor while the view is focused. Off by default (steady block, as in Termux). */
+    var cursorBlink: Boolean = false
         set(value) {
             field = value
             restartBlink()

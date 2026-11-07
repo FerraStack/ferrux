@@ -85,6 +85,23 @@ tap_node() {
   adb shell input tap $(((${1} + ${3}) / 2)) $(((${2} + ${4}) / 2))
 }
 
+# --- soft keyboard -----------------------------------------------------------
+
+# Gboard pops up when `input text` starts typing. ROWS_FULL (measured at
+# launch, keyboard hidden) is the ground truth: fewer rows = keyboard up.
+hide_ime() {
+  local i rows
+  rows="$(header_field rows)"
+  [ -n "$rows" ] && [ "$rows" -lt "$ROWS_FULL" ] || return 0
+  adb shell input keyevent KEYCODE_BACK # consumed by the IME while it is shown
+  for i in $(seq 1 20); do
+    rows="$(header_field rows)"
+    [ "$rows" -ge "$ROWS_FULL" ] && return 0
+    sleep 0.5
+  done
+  fail "could not hide the soft keyboard ($rows < $ROWS_FULL rows)"
+}
+
 # --- input -------------------------------------------------------------------
 
 # `input text` needs %s for spaces; keep shell metacharacters out (adb shell
@@ -128,11 +145,15 @@ adb shell am start -W -n "$ACTIVITY"
 log "01: fresh launch lands in a shell"
 expect_screen '^sessions=1 ' "one session auto-created"
 expect_screen '^~ \$' "shell prompt visible"
+ROWS_FULL="$(header_field rows)"
+log "grid at launch: ${ROWS_FULL} rows x $(header_field cols) cols"
+[ "$ROWS_FULL" -ge 30 ] || fail "terminal only has $ROWS_FULL rows on a full screen"
 shot 01-launch
 
 log "02: echo"
 type_line 'echo%shello%sferrux'
 expect_screen '^hello ferrux$' "echo output in grid"
+hide_ime
 shot 02-echo
 check_crash
 
@@ -147,9 +168,11 @@ type_line 'ls%s-la%s/system'
 expect_screen 'build\.prop' "ls -la /system output"
 type_line 'sh%scolors.sh'
 expect_screen '^truecolor ok$' "colour test ran"
+hide_ime
 shot 03-colors
 
 log "04: soft keyboard resizes the terminal"
+hide_ime
 rows_before="$(header_field rows)"
 tap_node 'content-desc="Terminal"'
 for i in $(seq 1 20); do
