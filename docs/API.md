@@ -408,9 +408,11 @@ For language servers, build tools and git: anything that speaks over stdio.
 1. **Environment**: Ferrux's session environment (`ferrux_env::build_env`),
    then the request's `env` entries on top (same key = replaced); with
    `clearEnv`, only the request's entries.
-2. **Program lookup**: an `argv[0]` without `/` is looked up in the resulting
-   `PATH`. Not found → `ERR_NOT_FOUND`, or `ERR_BOOTSTRAP_REQUIRED` when the
-   bootstrap isn't installed and the name isn't in `/system/bin`.
+2. **Program lookup**: like `execvp`, an `argv[0]` without `/` is looked up in
+   the resulting `PATH` (one with `/` is a path, relative to `cwd`), and
+   `argv[0]` is passed to the program unchanged. Not found → `ERR_NOT_FOUND`,
+   or `ERR_BOOTSTRAP_REQUIRED` when the bootstrap isn't installed (the name
+   might come from a package).
 3. **Exec mode**: decided by `ferrux-env` from the program's location (files
    under the app data dir run through `/system/bin/linker64` on targetSdk ≥ 29;
    see issue #5). The API never takes an exec mode from the client.
@@ -431,8 +433,8 @@ For language servers, build tools and git: anything that speaks over stdio.
 For terminals rendered by the client.
 
 - **Not shared** (default): Ferrux opens a PTY, spawns the program on its slave
-  side (controlling terminal, `setsid`, login-style `argv[0]` only for the
-  default shell), and returns the **PTY master fd itself** in `pty`
+  side (controlling terminal, `setsid`; pass `-sh`-style `argv[0]` yourself
+  for a login shell), and returns the **PTY master fd itself** in `pty`
   (`ptyIsSocket = false`). The client reads and writes it directly, with no
   copy through Ferrux, and can run its own `ferrux-term` on it
   (`PtyMaster::from_fd` + `SessionManager::attach`). Ferrux keeps a duplicate
@@ -747,10 +749,13 @@ with these deliberate differences:
 
 1. This document.
 2. `crates/ferrux-host` (platform-neutral: pipes spawn in `ferrux-pty`,
-   process registry with owners and cleanup, attach fan-out, path
-   confinement), JNI in `ferrux-android`, `FerruxApiService` in the app,
-   module `android/api` with AIDL + `ferrux-client`, `jitpack.yml`.
+   process registry with owners and cleanup, path confinement), JNI in
+   `ferrux-android`, `FerruxApiService` in the app, module `android/api` with
+   AIDL + `ferrux-client`, `jitpack.yml`. Shared sessions and
+   `listSessions`/`attachSession` answer `ERR_UNSUPPORTED` (and `getInfo`
+   doesn't list `attach`) until step 3b.
 3. `:apiclient-sample` and the emulator test of §10, with screenshots.
+3b. Shared sessions: attach fan-out with screen replay in `ferrux-session`.
 4. Spawning `$PREFIX` programs through the exec mode and bootstrap state from
    `ferrux-env` once those land (issue #5 and the M3 bootstrap).
 5. An issue in FerraStack/ferride describing `FerruxHost` on top of
