@@ -480,7 +480,7 @@ type_line 'sh%smouse.sh%salt'
 expect_screen '^ALTSCREEN alt' "full-screen probe started"
 hide_ime
 drag_rows 3 1000
-expect_screen '1b 5b 41 1b 5b 41 ' "the program received Up arrows"
+expect_screen '1b 5b 41 1b 5b 41' "the program received Up arrows"
 expect_ui offset '^0$' "the view itself did not scroll"
 expect_ui scrollbar '^0$' "no scrollbar on the alternate screen"
 shot 12-altscreen-scroll
