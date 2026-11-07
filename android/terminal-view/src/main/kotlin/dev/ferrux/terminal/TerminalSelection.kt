@@ -454,7 +454,12 @@ internal class TerminalSelection(private val view: TerminalView) {
                 }
                 MotionEvent.ACTION_MOVE ->
                     onHandleMoved(e.rawX - touchDx - screenLocation[0], e.rawY - touchDy - screenLocation[1])
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> onHandleUp()
+                MotionEvent.ACTION_UP -> {
+                    // The lift position counts: the last move can lag behind it.
+                    onHandleMoved(e.rawX - touchDx - screenLocation[0], e.rawY - touchDy - screenLocation[1])
+                    onHandleUp()
+                }
+                MotionEvent.ACTION_CANCEL -> onHandleUp()
             }
             return true
         }

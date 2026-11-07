@@ -593,11 +593,13 @@ class TerminalView @JvmOverloads constructor(
         gestureDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> scrollRemainder = 0f
-            MotionEvent.ACTION_MOVE -> if (selection.isDraggingFromLongPress && !scaling) {
-                // Long press, then drag: extend the selection word by word.
-                selection.extendLongPress(rowAt(event.y), colAt(event.x))
+            // Long press, then drag: extend the selection word by word, up to where the
+            // finger lifts.
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> if (selection.isDraggingFromLongPress) {
+                if (!scaling) selection.extendLongPress(rowAt(event.y), colAt(event.x))
+                if (event.actionMasked == MotionEvent.ACTION_UP) selection.endLongPress()
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+            MotionEvent.ACTION_CANCEL ->
                 if (selection.isDraggingFromLongPress) selection.endLongPress()
         }
         return true
