@@ -44,7 +44,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.Font
@@ -265,7 +266,8 @@ private fun KeyCell(
                 role = Role.Button
                 contentDescription = key.name
                 if (key is ExtraKey.Toggle) {
-                    selected = state != ModState.Off
+                    role = Role.Switch
+                    toggleableState = if (state != ModState.Off) ToggleableState.On else ToggleableState.Off
                     stateDescription = when (state) {
                         ModState.Off -> "off"
                         ModState.Once -> "on for next key"

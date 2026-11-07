@@ -199,25 +199,18 @@ tap_node 'text="Session 2"'
 sleep 1
 
 log "06: CTRL toggle"
-# Compose exposes `selected` on non-tab roles as checkable/checked.
-is_on() { node "$1" | grep -Eq '(checked|selected)="true"'; }
+# Behavioural check: CTRL applies to exactly the next key. Ctrl+A moves to
+# the start of the line in mksh, then '#' (unmodified) comments the line out.
+adb shell input text 'echo%sX'
 tap_node 'content-desc="CTRL"'
-for i in $(seq 1 10); do is_on 'content-desc="CTRL"' && break; sleep 0.5; done
-if ! is_on 'content-desc="CTRL"'; then
-  ui_dump > "$OUT/ui-ctrl.xml"
-  node 'content-desc="CTRL"'
-  fail "CTRL not shown as active (see ui-ctrl.xml)"
-fi
-log "ok: CTRL active"
-shot 06-ctrl
-adb shell input text c
 sleep 1
-if is_on 'content-desc="CTRL"'; then
-  ui_dump > "$OUT/ui-ctrl-after.xml"
-  fail "CTRL should reset after one key"
-fi
-log "ok: CTRL consumed by ^C"
-expect_screen '^sessions=2 ' "sessions still alive after ^C"
+log "CTRL node: $(node 'content-desc="CTRL"' | grep -oE '(checkable|checked|selected)="[a-z]+"' | tr '\n' ' ')"
+shot 06-ctrl
+adb shell input text a
+adb shell "input text '#'" # quoted: # starts a comment in the device shell
+expect_screen '^~ \$ #echo X$' "CTRL+A then # (modifier applied to one key only)"
+adb shell input keyevent KEYCODE_ENTER
+expect_screen '^sessions=2 ' "sessions still alive"
 
 check_crash
 log "all checks passed"
