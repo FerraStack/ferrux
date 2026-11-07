@@ -202,21 +202,40 @@ wait_ime_settled() {
   done
 }
 
+# show_ime: brings the soft keyboard up through the debug hook (if it is hidden)
+# and waits for it to settle. Keystrokes injected while Gboard is still starting
+# get reordered or lost ("echo" -> "ehco", "errux").
+show_ime() {
+  local rows
+  rows="$(header_field rows)"
+  if [ -n "$rows" ] && [ "$rows" -ge "${ROWS_FULL:-0}" ]; then
+    adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.SHOW_IME > /dev/null
+  fi
+  wait_ime_settled
+}
+
 # `input text` needs %s for spaces; keep shell metacharacters out (adb shell
 # passes the string through the device's sh).
-#
-# Typing makes Gboard pop up, and keystrokes injected while it animates in can
-# arrive out of order ("echo" -> "ehco"). So the first character goes alone,
-# then the rest once the keyboard has settled.
 type_text() {
-  adb shell input text "${1:0:1}"
-  wait_ime_settled
-  if [ ${#1} -gt 1 ]; then adb shell input text "${1:1}"; fi
+  show_ime
+  adb shell input text "$1"
 }
 
 type_line() {
   type_text "$1"
   adb shell input keyevent KEYCODE_ENTER
+}
+
+# run_line <command>: types a command and waits for the next prompt, so the next
+# input is not typed ahead into the running command.
+run_line() {
+  local i
+  type_line "$1"
+  for i in $(seq 1 40); do
+    [ "$(grid_lines | grep -v '^$' | tail -n1)" = '~ $' ] && return 0
+    sleep 0.25
+  done
+  fail "no prompt after '$1'"
 }
 
 # --- crash detection ---------------------------------------------------------
@@ -321,7 +340,7 @@ adb shell input keyevent KEYCODE_ENTER
 expect_screen '^sessions=2 ' "sessions still alive"
 
 log "07: long press selects a word, with handles and the action mode"
-type_line 'clear'
+run_line 'clear'
 type_line 'echo%sselect%sFERRUXWORD%sdone'
 expect_screen '^select FERRUXWORD done$' "selection test line"
 hide_ime
@@ -378,7 +397,7 @@ hide_ime
 
 log "11: hyperlinks: OSC 8 underline, Open link"
 adb shell "run-as $PKG sh -c 'cat > files/home/links.sh'" < "$HERE/ci-hyperlink.sh"
-type_line 'clear'
+run_line 'clear'
 type_line 'sh%slinks.sh'
 expect_screen '^links ok$' "hyperlink script ran"
 hide_ime

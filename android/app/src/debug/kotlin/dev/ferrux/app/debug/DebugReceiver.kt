@@ -29,6 +29,12 @@ import java.io.File
  */
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_SHOW_IME) {
+            // Lets CI bring the soft keyboard up before typing, so no keystroke is
+            // injected while the IME is still starting.
+            ActiveTerminal.view?.get()?.showKeyboard()
+            return
+        }
         val manager = SessionManager.active
         val sessions = manager?.sessions?.value.orEmpty()
         val current = manager?.current?.value ?: 0L
@@ -76,5 +82,6 @@ class DebugReceiver : BroadcastReceiver() {
 
     private companion object {
         const val TAG = "FerruxDump"
+        const val ACTION_SHOW_IME = "dev.ferrux.debug.SHOW_IME"
     }
 }
