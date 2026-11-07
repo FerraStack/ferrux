@@ -198,17 +198,38 @@ shot 05-drawer
 tap_node 'text="Session 2"'
 sleep 1
 
-log "06: CTRL toggle"
+# expect_node <selector> <attr="value">... : waits for a UI node with all attributes.
+expect_node() {
+  local sel="$1" i n a ok
+  shift
+  for i in $(seq 1 10); do
+    n="$(node "$sel")"
+    ok=1
+    for a in "$@"; do printf '%s' "$n" | grep -qF -- "$a" || ok=0; done
+    if [ "$ok" = 1 ]; then
+      log "ok: $sel has $*"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "node: $n"
+  fail "$sel lacks one of: $*"
+}
+
+log "06: CTRL toggle, also as seen by accessibility services"
+expect_node 'content-desc="CTRL"' 'checkable="true"' 'checked="false"' 'clickable="true"'
+expect_node 'content-desc="ESC"' 'clickable="true"'
+expect_node 'content-desc="Up"' 'clickable="true"'
 # Behavioural check: CTRL applies to exactly the next key. Ctrl+A moves to
 # the start of the line in mksh, then '#' (unmodified) comments the line out.
 adb shell input text 'echo%sX'
 tap_node 'content-desc="CTRL"'
-sleep 1
-log "CTRL node: $(node 'content-desc="CTRL"' | grep -oE '(checkable|checked|selected)="[a-z]+"' | tr '\n' ' ')"
+expect_node 'content-desc="CTRL"' 'checkable="true"' 'checked="true"'
 shot 06-ctrl
 adb shell input text a
 adb shell "input text '#'" # quoted: # starts a comment in the device shell
 expect_screen '^~ \$ #echo X$' "CTRL+A then # (modifier applied to one key only)"
+expect_node 'content-desc="CTRL"' 'checked="false"'
 adb shell input keyevent KEYCODE_ENTER
 expect_screen '^sessions=2 ' "sessions still alive"
 

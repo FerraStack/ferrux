@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,10 +44,6 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.Font
@@ -241,6 +239,26 @@ private fun KeyCell(
     val scope = rememberCoroutineScope()
     val currentOnPress by rememberUpdatedState(onPress)
     var pressed by remember { mutableStateOf(false) }
+    // Touch: keys fire on the way down (and repeat while held), so typing feels
+    // immediate; see pointerInput below. The click that the same touch produces on
+    // release must then be ignored, while a click without a touch comes from TalkBack
+    // or Switch Access and fires the key itself. The flag is set during the down event
+    // and cleared after the up event has been fully dispatched.
+    val touching = remember { BooleanArray(1) }
+    val accessibilityClick = { if (!touching[0]) currentOnPress() }
+    // clickable/toggleable give the key its role, click action and (for CTRL/ALT) the
+    // checked state that accessibility services read.
+    val action = if (key is ExtraKey.Toggle) {
+        Modifier.toggleable(
+            value = state != ModState.Off,
+            interactionSource = null,
+            indication = null,
+            role = Role.Switch,
+            onValueChange = { accessibilityClick() },
+        )
+    } else {
+        Modifier.clickable(interactionSource = null, indication = null, role = Role.Button, onClick = accessibilityClick)
+    }
 
     val background = when {
         state == ModState.Locked -> TerminalColors.Accent
@@ -261,24 +279,25 @@ private fun KeyCell(
             .padding(horizontal = 2.dp, vertical = 3.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(background)
+            // Keys never take input focus, so the IME stays connected to the terminal.
             .focusProperties { canFocus = false }
-            .semantics(mergeDescendants = true) {
-                role = Role.Button
+            .then(action)
+            .semantics {
                 contentDescription = key.name
                 if (key is ExtraKey.Toggle) {
-                    role = Role.Switch
-                    toggleableState = if (state != ModState.Off) ToggleableState.On else ToggleableState.Off
                     stateDescription = when (state) {
                         ModState.Off -> "off"
                         ModState.Once -> "on for next key"
                         ModState.Locked -> "locked"
                     }
                 }
-                onClick { currentOnPress(); true }
             }
+            // Inside the click modifier, so it sees each event first; it never consumes
+            // them, so the click modifier still recognises the tap.
             .pointerInput(key, repeatable) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    touching[0] = true
                     pressed = true
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     currentOnPress()
@@ -295,6 +314,7 @@ private fun KeyCell(
                     waitForUpOrCancellation()
                     repeater?.cancel()
                     pressed = false
+                    scope.launch { touching[0] = false }
                 }
             },
     ) {

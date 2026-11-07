@@ -47,6 +47,8 @@ The app opens straight into a shell, with the terminal edge to edge. The extra-k
 row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
 key; a double tap locks it. The arrow and page keys repeat while held. To open the
 session drawer, swipe from the left edge or tap ☰. Long-press the terminal to paste.
+With TalkBack or Switch Access, CTRL and ALT are switches that announce their state
+(off, on for the next key, or locked), and every key can be activated.
 
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
@@ -117,10 +119,11 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 
 - **rust**: fmt, clippy and tests.
 - **android**: builds with cargo-ndk, checks 16 KB ELF alignment, runs `assembleDebug`
-  and uploads the APK.
+  and the JVM unit tests, and uploads the APK.
 - **emulator** (pull requests and manual runs only) runs on two emulators:
   - **API 35 (Pixel 6):** launch, `echo`, `ls` and a colour test, the soft keyboard,
-    two sessions in the drawer, and CTRL.
+    two sessions in the drawer, and CTRL, including the checked and clickable state that
+    accessibility services see.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only
