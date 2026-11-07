@@ -23,6 +23,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+mod events;
+use events::EventQueue;
+
 use ferrux_pty::{Child, ExitStatus, PtyMaster, SpawnConfig, SpawnError, WinSize};
 use ferrux_term::{Key, Modifiers, Snapshot, TermConfig, TermEvent, TermSize, Terminal};
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -85,7 +88,7 @@ const CLOSE_GRACE: Duration = Duration::from_secs(3);
 #[derive(Debug)]
 struct State {
     terminal: Terminal,
-    events: VecDeque<SessionEvent>,
+    events: EventQueue,
     /// Bytes waiting to be written to the pty.
     outbox: VecDeque<u8>,
     exit: Option<ExitStatus>,
@@ -196,7 +199,7 @@ impl Session {
 
     /// Takes pending UI events.
     pub fn drain_events(&self) -> Vec<SessionEvent> {
-        self.lock().events.drain(..).collect()
+        self.lock().events.drain()
     }
 
     pub fn title(&self) -> Option<String> {
@@ -259,7 +262,7 @@ impl Session {
                             .or_else(|| panic.downcast_ref::<String>().cloned())
                             .unwrap_or_else(|| "terminal engine panicked".into());
                         log::error!("session {}: {msg}", self.id);
-                        st.events.push_back(SessionEvent::Failed(msg));
+                        st.events.push(SessionEvent::Failed(msg));
                         st.eof = true;
                         st.outbox.clear();
                         return (total + n, true);
@@ -275,7 +278,7 @@ impl Session {
                             TermEvent::Bell => SessionEvent::Bell,
                             TermEvent::ClipboardStore(s) => SessionEvent::ClipboardStore(s),
                         };
-                        st.events.push_back(ev);
+                        st.events.push(ev);
                     }
                     total += n;
                     // Yield to other sessions after a burst.
@@ -438,7 +441,7 @@ impl SessionManager {
             child,
             state: Mutex::new(State {
                 terminal: Terminal::new(size, term),
-                events: VecDeque::new(),
+                events: EventQueue::default(),
                 outbox: VecDeque::new(),
                 exit: None,
                 eof: false,
@@ -540,7 +543,7 @@ fn wait_child(
             if let Some(session) = session.upgrade() {
                 let mut st = session.lock();
                 st.exit = Some(status);
-                st.events.push_back(SessionEvent::Exited(status));
+                st.events.push(SessionEvent::Exited(status));
             }
         }
         Ok(None) => log::error!("session {id}: child not reapable after waitid"),
@@ -621,7 +624,7 @@ fn io_loop(shared: &Shared, wake_read: OwnedFd) {
                     catch_unwind(AssertUnwindSafe(|| st.terminal.flush_sync_if_expired()));
                 if flushed.is_err() {
                     st.events
-                        .push_back(SessionEvent::Failed("terminal engine panicked".into()));
+                        .push(SessionEvent::Failed("terminal engine panicked".into()));
                     st.eof = true;
                 }
             }

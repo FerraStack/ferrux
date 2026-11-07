@@ -145,6 +145,31 @@ fn title_bell_and_clipboard_events() {
 }
 
 #[test]
+fn bell_and_title_spam_is_coalesced() {
+    // A program spams BEL and OSC 2 titles while nobody drains events (the
+    // app is in the background): the queue must stay bounded and keep the
+    // latest state.
+    let mgr = SessionManager::new().unwrap();
+    let script = "i=0; while [ $i -lt 20000 ]; do printf '\\a\\033]2;title %d\\007' $i; i=$((i+1)); done; printf done";
+    let s = mgr.spawn(&sh(script), TermConfig::default()).unwrap();
+    wait_for(&mgr, &s, "exit", |s| s.exit_status().is_some());
+    wait_for(&mgr, &s, "done", screen_contains("done"));
+    assert!(s.lock().events.len() <= events::EVENT_LIMIT);
+    // The exit may be queued before the last output is read, so the order
+    // is not fixed.
+    let events = s.drain_events();
+    assert_eq!(events.len(), 3, "{events:?}");
+    for expected in [
+        SessionEvent::Bell,
+        SessionEvent::Title(Some("title 19999".into())),
+        SessionEvent::Exited(ExitStatus::Exited(0)),
+    ] {
+        assert!(events.contains(&expected), "{expected:?} in {events:?}");
+    }
+    assert_eq!(s.title().as_deref(), Some("title 19999"));
+}
+
+#[test]
 fn bracketed_paste_reaches_program() {
     let mgr = SessionManager::new().unwrap();
     let script = "stty raw -echo; printf '\\033[?2004h'; r=$(dd bs=1 count=15 2>/dev/null | od -An -c | tr -d ' \\n'); stty sane; printf '\\r\\n%s' \"$r\"";
