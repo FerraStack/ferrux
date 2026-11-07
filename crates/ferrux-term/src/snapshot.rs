@@ -117,15 +117,19 @@ pub struct Modes {
     pub bracketed_paste: bool,
     pub alt_screen: bool,
     pub mouse_reporting: bool,
+    /// DECSET 1007: on the alternate screen, scrolling sends arrow keys.
+    pub alternate_scroll: bool,
 }
 
 impl Modes {
-    /// FFI bits: 0 app cursor, 1 bracketed paste, 2 alt screen, 3 mouse.
+    /// FFI bits: 0 app cursor, 1 bracketed paste, 2 alt screen, 3 mouse,
+    /// 4 alternate scroll.
     pub const fn bits(self) -> u32 {
         self.app_cursor as u32
             | (self.bracketed_paste as u32) << 1
             | (self.alt_screen as u32) << 2
             | (self.mouse_reporting as u32) << 3
+            | (self.alternate_scroll as u32) << 4
     }
 }
 
@@ -139,6 +143,9 @@ pub struct Snapshot {
     pub cursor: Cursor,
     /// How many lines the view is scrolled back into history (0 = live).
     pub display_offset: usize,
+    /// Lines of scrollback history above the screen (0 on the alternate
+    /// screen), for scrollbars.
+    pub history: usize,
     pub default_fg: Rgb,
     pub default_bg: Rgb,
     pub modes: Modes,
@@ -267,14 +274,15 @@ impl Snapshot {
     pub const SELECTION_LEN: usize = 5;
 
     /// Length of the header in the integer encoding.
-    pub const HEADER_LEN: usize = 8;
+    pub const HEADER_LEN: usize = 10;
     /// Integers per cell in the integer encoding.
     pub const INTS_PER_CELL: usize = 4;
 
     /// Writes the compact integer encoding used across JNI.
     ///
     /// Header: `rows, cols, cursor_row, cursor_col, cursor_shape,
-    /// display_offset, default_bg_argb, mode_bits`, followed by
+    /// display_offset, default_bg_argb, mode_bits, history, default_fg_argb`,
+    /// followed by
     /// `codepoint, fg_argb, bg_argb, flags` per cell (row-major). Blank cells
     /// have codepoint 0. Then three variable-length sections:
     ///
@@ -301,6 +309,8 @@ impl Snapshot {
             self.display_offset as u32,
             self.default_bg.to_argb(),
             self.modes.bits(),
+            self.history as u32,
+            self.default_fg.to_argb(),
         ];
         let (head, body) = out.split_at_mut(Self::HEADER_LEN);
         for (dst, src) in head.iter_mut().zip(header) {

@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
 import android.text.InputType
@@ -17,6 +18,7 @@ import android.util.TypedValue
 import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
+import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.Menu
@@ -29,9 +31,11 @@ import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.widget.OverScroller
 import dev.ferrux.terminal.SnapshotLayout as L
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * A terminal widget: draws a [TerminalBackend] snapshot on a Canvas and turns
@@ -154,6 +158,30 @@ class TerminalView @JvmOverloads constructor(
         private set
     internal var frameDisplayOffset = 0
         private set
+    private var frameHistory = 0
+    private var frameModes = 0
+
+    // Scrolling: drag and fling distances become lines; the indicator fades out
+    // after the last scroll unless the view stays scrolled back.
+    private val scrollLines = LineAccumulator()
+    private val flingLines = LineAccumulator()
+    private val scroller = OverScroller(context)
+    private var lastFlingY = 0
+    private var flingRow = 0
+    private var flingCol = 0
+    private var lastScrollAt = 0L
+    private var scrollbarAlpha = 0f
+    private val scrollbarPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val jumpStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val scrollRect = RectF()
+
+    /** The "back to the live screen" button, shown while scrolled back. */
+    private val jumpRect = RectF()
     internal val cellWidthPx: Float get() = cellWidth
     internal val cellHeightPx: Float get() = cellHeight
 
@@ -167,7 +195,6 @@ class TerminalView @JvmOverloads constructor(
     private val charBuffer = CharArray(512)
     private var composing = ""
     private var lastResize = 0 to 0
-    private var scrollRemainder = 0f
     private var scaling = false
     private var cursorOn = true
     private val blinkRunnable = object : Runnable {
@@ -197,14 +224,21 @@ class TerminalView @JvmOverloads constructor(
             if (scaling || selection.isDraggingFromLongPress) return true
             tapCounter.reset()
             // Finger moving down (dy < 0) reveals older output: scroll back.
-            scrollRemainder -= dy
-            val lines = (scrollRemainder / cellHeight).toInt()
-            if (lines != 0) {
-                scrollRemainder -= lines * cellHeight
-                backend?.scroll(lines)
-                selection.onScrolled()
-                invalidate()
-            }
+            val lines = scrollLines.add(-dy, cellHeight)
+            if (lines != 0) scrollBy(lines, rowAt(e2.y), colAt(e2.x))
+            return true
+        }
+
+        override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (scaling || selection.isDraggingFromLongPress) return true
+            // Off the main screen every line is a key press or wheel event: keep flings short.
+            val velocity = if (scrollsHistory()) vy else vy * PROGRAM_FLING_FACTOR
+            lastFlingY = 0
+            flingLines.reset()
+            flingRow = rowAt(e2.y)
+            flingCol = colAt(e2.x)
+            scroller.fling(0, 0, 0, velocity.toInt(), 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
+            postOnAnimation(flingStep)
             return true
         }
     }).apply {
@@ -249,8 +283,55 @@ class TerminalView @JvmOverloads constructor(
         restartBlink()
     }
 
+    /** One animation frame of a fling: scroll by the lines the scroller covered. */
+    private val flingStep = object : Runnable {
+        override fun run() {
+            if (!scroller.computeScrollOffset()) return
+            val y = scroller.currY
+            val lines = flingLines.add((y - lastFlingY).toFloat(), cellHeight)
+            lastFlingY = y
+            if (lines != 0) {
+                val atEnd = scrollsHistory() &&
+                    ((lines > 0 && frameDisplayOffset >= frameHistory) || (lines < 0 && frameDisplayOffset == 0))
+                if (atEnd) {
+                    scroller.forceFinished(true)
+                    return
+                }
+                scrollBy(lines, flingRow, flingCol)
+            }
+            postOnAnimation(this)
+        }
+    }
+
+    /** Whether a scroll gesture moves through history (rather than going to the program). */
+    private fun scrollsHistory(): Boolean = frameModes and (L.MODE_ALT_SCREEN or L.MODE_MOUSE) == 0
+
+    /**
+     * Scrolls by [lines] (positive = older output) at a cell: history on the main
+     * screen, arrow keys or wheel events for full-screen programs (decided natively).
+     */
+    private fun scrollBy(lines: Int, row: Int, col: Int) {
+        val b = backend ?: return
+        b.scrollGesture(lines, row, col)
+        if (scrollsHistory()) lastScrollAt = SystemClock.uptimeMillis()
+        selection.onScrolled()
+        invalidate()
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        // Mouse wheels and trackpads.
+        if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER) && event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            val lines = (event.getAxisValue(MotionEvent.AXIS_VSCROLL) * WHEEL_LINES).roundToInt()
+            if (lines != 0) scrollBy(lines, rowAt(event.y), colAt(event.x))
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
     override fun onDetachedFromWindow() {
         removeCallbacks(blinkRunnable)
+        removeCallbacks(flingStep)
+        scroller.forceFinished(true)
         removeCallbacks(showKeyboardRunnable)
         selection.onDetached()
         super.onDetachedFromWindow()
@@ -345,6 +426,8 @@ class TerminalView @JvmOverloads constructor(
         frameRows = rows
         frameCols = cols
         frameDisplayOffset = s[L.H_DISPLAY_OFFSET]
+        frameHistory = s[L.H_HISTORY]
+        frameModes = s[L.H_MODES]
         readCombining(rows, cols, n)
         val selectionOffset = L.selectionOffset(s, rows, cols, n)
         L.readLinks(s, if (selectionOffset < 0) -1 else selectionOffset + L.SELECTION_SIZE, n, links)
@@ -357,7 +440,66 @@ class TerminalView @JvmOverloads constructor(
         }
         drawCursor(canvas, rows, cols)
         canvas.restore()
+        drawScrollIndicators(canvas, rows, s[L.H_DEFAULT_FG], defaultBg)
         selection.onFrame(s, selectionOffset)
+    }
+
+    /**
+     * The scrollbar (while scrolling, and as long as the view is scrolled back) and
+     * the round "back to live" button in the bottom-right corner while scrolled back.
+     */
+    private fun drawScrollIndicators(canvas: Canvas, rows: Int, fg: Int, bg: Int) {
+        val offset = frameDisplayOffset
+        val since = SystemClock.uptimeMillis() - lastScrollAt
+        scrollbarAlpha = when {
+            frameHistory == 0 -> 0f
+            offset > 0 || since < SCROLLBAR_LINGER_MS -> 1f
+            since < SCROLLBAR_LINGER_MS + SCROLLBAR_FADE_MS -> 1f - (since - SCROLLBAR_LINGER_MS).toFloat() / SCROLLBAR_FADE_MS
+            else -> 0f
+        }
+        val density = resources.displayMetrics.density
+        if (scrollbarAlpha > 0f) {
+            val track = rows * cellHeight
+            Scrollbar.thumb(rows, frameHistory, offset, track, SCROLLBAR_MIN_THUMB_DP * density)?.let { (top, height) ->
+                val w = SCROLLBAR_WIDTH_DP * density
+                val right = width - SCROLLBAR_MARGIN_DP * density
+                scrollRect.set(right - w, paddingTop + top, right, paddingTop + top + height)
+                scrollbarPaint.color = fg
+                scrollbarPaint.alpha = (scrollbarAlpha * SCROLLBAR_MAX_ALPHA).toInt()
+                canvas.drawRoundRect(scrollRect, w / 2, w / 2, scrollbarPaint)
+            }
+            // Keep fading out once scrolling stopped at the live screen.
+            if (offset == 0) {
+                val linger = SCROLLBAR_LINGER_MS - since
+                if (linger > 0) postInvalidateDelayed(linger) else postInvalidateOnAnimation()
+            }
+        }
+        if (offset > 0) {
+            val r = JUMP_RADIUS_DP * density
+            val cx = width - paddingRight - JUMP_MARGIN_DP * density - r
+            val cy = height - paddingBottom - JUMP_MARGIN_DP * density - r
+            jumpRect.set(cx - r, cy - r, cx + r, cy + r)
+            jumpPaint.color = blend(bg, fg, 0.16f)
+            canvas.drawCircle(cx, cy, r, jumpPaint)
+            jumpStroke.color = fg
+            jumpStroke.strokeWidth = 1.8f * density
+            val a = r * 0.36f
+            canvas.drawLine(cx, cy - a, cx, cy + a, jumpStroke)
+            canvas.drawLine(cx - a * 0.8f, cy + a * 0.2f, cx, cy + a, jumpStroke)
+            canvas.drawLine(cx + a * 0.8f, cy + a * 0.2f, cx, cy + a, jumpStroke)
+        } else {
+            jumpRect.setEmpty()
+        }
+    }
+
+    /** [from] moved towards [to] by [t] (0..1), opaque. */
+    private fun blend(from: Int, to: Int, t: Float): Int {
+        fun mix(a: Int, b: Int) = (a + (b - a) * t).roundToInt()
+        return Color.rgb(
+            mix(Color.red(from), Color.red(to)),
+            mix(Color.green(from), Color.green(to)),
+            mix(Color.blue(from), Color.blue(to)),
+        )
     }
 
     /** The OSC 8 hyperlink at a viewport cell of the last frame, if any. */
@@ -592,7 +734,11 @@ class TerminalView @JvmOverloads constructor(
         scaleDetector.onTouchEvent(event)
         gestureDetector.onTouchEvent(event)
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> scrollRemainder = 0f
+            MotionEvent.ACTION_DOWN -> {
+                // Touching the screen stops a fling, like in any list.
+                scroller.forceFinished(true)
+                scrollLines.reset()
+            }
             // Long press, then drag: extend the selection word by word, up to where the
             // finger lifts.
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> if (selection.isDraggingFromLongPress) {
@@ -614,6 +760,23 @@ class TerminalView @JvmOverloads constructor(
     /** One, two or three taps: keyboard / select word / select line. */
     private fun onTap(e: MotionEvent) {
         removeCallbacks(showKeyboardRunnable)
+        if (!jumpRect.isEmpty && jumpRect.contains(e.x, e.y)) {
+            tapCounter.reset()
+            backend?.scroll(-frameDisplayOffset)
+            invalidate()
+            return
+        }
+        if (frameModes and L.MODE_MOUSE != 0 && !selection.isActive) {
+            // The program asked for mouse events: a tap is a left click there.
+            tapCounter.reset()
+            val b = backend ?: return
+            val row = rowAt(e.y)
+            val col = colAt(e.x)
+            b.mouseEvent(TerminalKeys.MOUSE_LEFT, TerminalKeys.MOUSE_PRESS, row, col, 0)
+            b.mouseEvent(TerminalKeys.MOUSE_LEFT, TerminalKeys.MOUSE_RELEASE, row, col, 0)
+            if (!isKeyboardShown()) showKeyboard()
+            return
+        }
         when (tapCounter.onTap(e.eventTime, e.x, e.y)) {
             1 -> when {
                 // A tap outside the toolbar ends selection mode, like in text fields.
@@ -662,6 +825,12 @@ class TerminalView @JvmOverloads constructor(
             "rows" to frameRows.toString(),
             "cols" to frameCols.toString(),
             "offset" to frameDisplayOffset.toString(),
+            "history" to frameHistory.toString(),
+            "modes" to frameModes.toString(),
+            "scrollbar" to if (scrollbarAlpha > 0f) "1" else "0",
+            "jumpButton" to if (jumpRect.isEmpty) "" else jumpRect.run {
+                "${location[0] + left.toInt()},${location[1] + top.toInt()},${location[0] + right.toInt()},${location[1] + bottom.toInt()}"
+            },
             "selection" to selected.replace("\\", "\\\\").replace("\n", "\\n"),
             "links" to links.joinToString("|") { "${it.start}-${it.end}=${it.uri}" },
         ) + selection.debugState()
@@ -903,6 +1072,20 @@ class TerminalView @JvmOverloads constructor(
         private const val MIN_TEXT_SIZE_SP = 6f
         private const val MAX_TEXT_SIZE_SP = 40f
         private const val LINK_UNDERLINE_ALPHA = 0x99
+
+        /** Lines per notch of a mouse wheel. */
+        private const val WHEEL_LINES = 3f
+
+        /** Flings sent to programs as keys/wheel events are scaled down by this. */
+        private const val PROGRAM_FLING_FACTOR = 0.35f
+        private const val SCROLLBAR_WIDTH_DP = 3f
+        private const val SCROLLBAR_MARGIN_DP = 2f
+        private const val SCROLLBAR_MIN_THUMB_DP = 32f
+        private const val SCROLLBAR_MAX_ALPHA = 0x80
+        private const val SCROLLBAR_LINGER_MS = 900L
+        private const val SCROLLBAR_FADE_MS = 300L
+        private const val JUMP_RADIUS_DP = 20f
+        private const val JUMP_MARGIN_DP = 14f
 
         /** Maps Android meta state to [TerminalKeys] modifier bits. */
         fun metaToMods(metaState: Int): Int {

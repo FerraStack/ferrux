@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
 
+/// Ints before the first cell in the integer encoding.
+const H: usize = Snapshot::HEADER_LEN;
+
 fn term(rows: u16, cols: u16) -> Terminal {
     Terminal::new(TermSize::new(rows, cols), TermConfig::default())
 }
@@ -123,11 +126,21 @@ fn device_status_report_produces_response() {
 #[test]
 fn modes_follow_decset() {
     let mut t = term(3, 10);
-    assert_eq!(t.modes(), Modes::default());
+    // Alternate scroll (1007) is on by default, as in xterm's default config.
+    assert_eq!(
+        t.modes(),
+        Modes {
+            alternate_scroll: true,
+            ..Modes::default()
+        }
+    );
     t.feed(b"\x1b[?1h\x1b[?2004h\x1b[?1049h\x1b[?1000h");
     let m = t.modes();
     assert!(m.app_cursor && m.bracketed_paste && m.alt_screen && m.mouse_reporting);
-    assert_eq!(m.bits(), 0b1111);
+    assert_eq!(m.bits(), 0b11111);
+    t.feed(b"\x1b[?1007l");
+    assert!(!t.modes().alternate_scroll);
+    t.feed(b"\x1b[?1007h");
     assert_eq!(t.encode_key(Key::Up, Modifiers::NONE), b"\x1bOA");
     assert_eq!(t.encode_paste("x"), b"\x1b[200~x\x1b[201~");
 }
@@ -171,6 +184,71 @@ fn scrollback_and_scroll_to_bottom() {
 }
 
 #[test]
+fn scroll_gesture_scrolls_history_on_the_main_screen() {
+    let mut t = term(3, 10);
+    for i in 0..10 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    assert_eq!(t.history_size(), 8);
+    assert_eq!(t.snapshot().history, 8);
+    assert!(t.scroll_gesture(3, 1, 1).is_empty());
+    assert_eq!(t.display_offset(), 3);
+    assert!(t.scroll_gesture(-1, 1, 1).is_empty());
+    assert_eq!(t.display_offset(), 2);
+    // Clamped to the history.
+    t.scroll_gesture(100, 0, 0);
+    assert_eq!(t.display_offset(), 8);
+    assert!(t.scroll_gesture(0, 0, 0).is_empty());
+}
+
+#[test]
+fn scroll_gesture_sends_arrows_on_the_alternate_screen() {
+    let mut t = term(3, 10);
+    t.feed(b"x\r\ny\r\nz\r\nw\r\n\x1b[?1049h");
+    assert_eq!(
+        t.snapshot().history,
+        0,
+        "the alternate screen has no history"
+    );
+    assert_eq!(t.scroll_gesture(2, 0, 0), b"\x1b[A\x1b[A");
+    assert_eq!(t.scroll_gesture(-1, 0, 0), b"\x1b[B");
+    assert_eq!(t.display_offset(), 0);
+    // Application cursor mode changes the arrows.
+    t.feed(b"\x1b[?1h");
+    assert_eq!(t.scroll_gesture(1, 0, 0), b"\x1bOA");
+    // Without alternate scroll the gesture does nothing.
+    t.feed(b"\x1b[?1007l");
+    assert!(t.scroll_gesture(1, 0, 0).is_empty());
+}
+
+#[test]
+fn scroll_gesture_sends_wheel_events_with_mouse_reporting() {
+    let mut t = term(5, 20);
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    assert_eq!(t.scroll_gesture(2, 3, 4), b"\x1b[<64;5;4M\x1b[<64;5;4M");
+    assert_eq!(t.scroll_gesture(-1, 0, 0), b"\x1b[<65;1;1M");
+    // Taps: press and release, clamped to the grid.
+    let press = t.encode_mouse(
+        MouseButton::Left,
+        MouseAction::Press,
+        99,
+        99,
+        Modifiers::NONE,
+    );
+    assert_eq!(press, b"\x1b[<0;20;5M");
+    t.feed(b"\x1b[?1000l");
+    let off = t.encode_mouse(MouseButton::Left, MouseAction::Press, 0, 0, Modifiers::NONE);
+    assert!(off.is_empty());
+    assert_eq!(
+        t.mouse_mode(),
+        MouseMode {
+            sgr: true,
+            ..MouseMode::default()
+        }
+    );
+}
+
+#[test]
 fn damage_is_tracked() {
     let mut t = term(4, 10);
     assert_eq!(t.take_damage(), Damage::Full);
@@ -198,18 +276,20 @@ fn int_encoding_layout() {
     let s = t.snapshot();
     let mut out = vec![0i32; s.encoded_len()];
     assert_eq!(s.encode_ints(&mut out[..5]), None);
-    assert_eq!(s.encode_ints(&mut out), Some(8 + 6 * 4 + 1 + 5 + 1));
-    assert_eq!(out[8 + 6 * 4], 0, "empty combining table");
+    assert_eq!(s.encode_ints(&mut out), Some(H + 6 * 4 + 1 + 5 + 1));
+    assert_eq!(out[H + 6 * 4], 0, "empty combining table");
     assert_eq!(
-        &out[8 + 6 * 4 + 1..],
+        &out[H + 6 * 4 + 1..],
         &[0, 0, 0, 0, 0, 0],
         "no selection, no links"
     );
     assert_eq!(&out[..6], &[2, 3, 0, 1, 1, 0]);
     assert_eq!(out[6] as u32, Palette::default().background.to_argb());
-    assert_eq!(out[8], 'A' as i32);
-    assert_eq!(out[9] as u32, Palette::default().indexed[1].to_argb());
-    assert_eq!(out[12], 0, "blank cell encodes as codepoint 0");
+    assert_eq!(out[8], 0, "no history yet");
+    assert_eq!(out[9] as u32, Palette::default().foreground.to_argb());
+    assert_eq!(out[H], 'A' as i32);
+    assert_eq!(out[H + 1] as u32, Palette::default().indexed[1].to_argb());
+    assert_eq!(out[H + 4], 0, "blank cell encodes as codepoint 0");
 }
 
 #[test]
@@ -230,7 +310,7 @@ fn combining_marks_are_kept() {
     // Integer encoding carries the side table.
     let mut out = vec![0i32; s.encoded_len()];
     s.encode_ints(&mut out).unwrap();
-    let table = &out[8 + 3 * 20 * 4..];
+    let table = &out[H + 3 * 20 * 4..];
     assert_eq!(table[0] as usize, s.combining.len());
     assert_eq!(&table[1..4], &[0, 1, 0x301]);
 }
@@ -417,7 +497,7 @@ fn selection_is_encoded_with_viewport_rows() {
     let s = t.snapshot();
     let mut out = vec![0i32; s.encoded_len()];
     s.encode_ints(&mut out).unwrap();
-    let tail = &out[8 + 2 * 4 * 4..];
+    let tail = &out[H + 2 * 4 * 4..];
     assert_eq!(tail[0], 0, "no combining");
     assert_eq!(&tail[1..6], &[1, -1, 0, 0, 1]);
     assert_eq!(tail[6], 0, "no links");
@@ -456,7 +536,7 @@ fn osc8_hyperlinks_are_reported_as_spans() {
 
     let mut out = vec![0i32; s.encoded_len()];
     s.encode_ints(&mut out).unwrap();
-    let tail = &out[8 + 3 * 12 * 4 + 1 + 5..];
+    let tail = &out[H + 3 * 12 * 4 + 1 + 5..];
     assert_eq!(tail[0], 2);
     assert_eq!(&tail[1..4], &[4, 10, 20]);
     let uri: String = tail[4..24]
@@ -465,7 +545,7 @@ fn osc8_hyperlinks_are_reported_as_spans() {
         .collect();
     assert_eq!(uri, "https://ferrux.dev/a");
     assert_eq!(&tail[24..27], &[20, 28, 16]);
-    assert_eq!(out.len(), 8 + 3 * 12 * 4 + 1 + 5 + 1 + 3 + 20 + 3 + 16);
+    assert_eq!(out.len(), H + 3 * 12 * 4 + 1 + 5 + 1 + 3 + 20 + 3 + 16);
 }
 
 #[test]
