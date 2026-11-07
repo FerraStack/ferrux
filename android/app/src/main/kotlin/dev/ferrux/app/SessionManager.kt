@@ -45,6 +45,14 @@ class SessionManager(private val context: Context) {
     private val _bells = MutableSharedFlow<Long>(extraBufferCapacity = 16)
     val bells: SharedFlow<Long> = _bells.asSharedFlow()
 
+    private val _clipboardRequest = MutableStateFlow<ClipboardRequest?>(null)
+
+    /**
+     * An OSC 52 clipboard write waiting for the user's answer (policy [ClipboardPolicy.ASK]).
+     * Only the latest one is kept; it stays pending while the app is in the background.
+     */
+    val clipboardRequest: StateFlow<ClipboardRequest?> = _clipboardRequest.asStateFlow()
+
     private val outputListeners = CopyOnWriteArraySet<Runnable>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -136,7 +144,7 @@ class SessionManager(private val context: Context) {
                     mainHandler.post { kill(id) }
                 }
                 is SessionEvent.Bell -> _bells.tryEmit(id)
-                is SessionEvent.Clipboard -> mainHandler.post { setClipboard(event.text) }
+                is SessionEvent.Clipboard -> mainHandler.post { onClipboardWrite(id, event.text) }
                 is SessionEvent.Failed -> {
                     Log.e(FerruxApplication.TAG, "session $id failed: ${event.message}")
                     updateSession(id) { it.copy(title = "${it.title} (error)") }
@@ -150,8 +158,26 @@ class SessionManager(private val context: Context) {
         _sessions.update { list -> list.map { if (it.id == id) change(it) else it } }
     }
 
+    /**
+     * Any program, even `cat` of an untrusted file, can send OSC 52, so by default the
+     * user is asked before it replaces the clipboard (issue #12).
+     */
+    private fun onClipboardWrite(id: Long, text: String) {
+        val session = _sessions.value.firstOrNull { it.id == id } ?: return
+        when (FerruxSettings.get(context).clipboardWrites.value) {
+            ClipboardPolicy.OFF -> Log.i(FerruxApplication.TAG, "OSC 52 write from session $id ignored")
+            ClipboardPolicy.ALLOW -> setClipboard(text)
+            ClipboardPolicy.ASK -> _clipboardRequest.value = ClipboardRequest(id, session.title, text)
+        }
+    }
+
+    /** Answers the pending [clipboardRequest]. */
+    fun answerClipboard(request: ClipboardRequest, allow: Boolean) {
+        if (allow) setClipboard(request.text)
+        _clipboardRequest.compareAndSet(request, null)
+    }
+
     private fun setClipboard(text: String) {
-        // TODO(M4): make OSC 52 clipboard writes a user setting (privacy).
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("Ferrux", text))
     }

@@ -116,6 +116,9 @@ impl Default for TermConfig {
     }
 }
 
+/// Largest OSC 52 clipboard write passed on to the UI (decoded UTF-8 bytes).
+pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
+
 /// Events for the UI layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -684,6 +687,14 @@ impl Terminal {
                     self.events.push(TermEvent::Title(None));
                 }
                 EngineEvent::Bell => self.events.push(TermEvent::Bell),
+                // A program flooding the clipboard is dropped, not truncated: a
+                // partial copy would be silently wrong.
+                EngineEvent::ClipboardStore(_, text) if text.len() > MAX_CLIPBOARD_BYTES => {
+                    log::warn!(
+                        "OSC 52: ignoring a {} byte clipboard write (limit {MAX_CLIPBOARD_BYTES})",
+                        text.len()
+                    );
+                }
                 EngineEvent::ClipboardStore(_, text) => {
                     self.events.push(TermEvent::ClipboardStore(text))
                 }
