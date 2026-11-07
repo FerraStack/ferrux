@@ -180,3 +180,109 @@ fn linker_exec_mode() {
     assert_eq!(read_to_end(&master), "linked");
     assert_eq!(child.wait().unwrap().code(), 0);
 }
+
+// --- Signals across fork() (issue #2) ---
+
+use std::sync::atomic::{AtomicI32, Ordering};
+
+/// Signal the next forked children raise against themselves before resetting
+/// their signal state (0 = none). Read in the child: async-signal-safe.
+static INJECT_SIGNAL: AtomicI32 = AtomicI32::new(0);
+/// Write end of a pipe the test handler reports to.
+static HANDLER_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Called by `child_main` right after `fork()`, before signal dispositions are
+/// reset: the window in which an inherited handler must not run.
+pub(super) fn child_pre_reset_hook() {
+    let sig = INJECT_SIGNAL.load(Ordering::Relaxed);
+    if sig != 0 {
+        // SAFETY: raw syscalls, async-signal-safe.
+        unsafe {
+            let pid = libc::syscall(libc::SYS_getpid);
+            libc::syscall(libc::SYS_kill, pid, sig);
+        }
+    }
+}
+
+extern "C" fn report_handler(_sig: libc::c_int) {
+    let fd = HANDLER_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        // SAFETY: write(2) is async-signal-safe; the buffer is static.
+        unsafe { libc::write(fd, b"!".as_ptr().cast(), 1) };
+    }
+}
+
+fn thread_sigmask() -> libc::sigset_t {
+    // SAFETY: querying the mask into a zeroed sigset_t.
+    unsafe {
+        let mut cur: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut cur);
+        cur
+    }
+}
+
+fn is_blocked(set: &libc::sigset_t, sig: i32) -> bool {
+    // SAFETY: valid, initialised set.
+    unsafe { libc::sigismember(set, sig) == 1 }
+}
+
+/// A signal delivered to the child between `fork()` and the reset of its
+/// dispositions must not run the parent's handler in the child: the parent
+/// blocks everything across fork, and once the child has reset to `SIG_DFL`
+/// the pending signal gets its default action (ignore, for `SIGWINCH`).
+#[test]
+fn inherited_handler_never_runs_in_child() {
+    let (rd, wr) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+    rustix::io::ioctl_fionbio(&rd, true).unwrap();
+    HANDLER_FD.store(wr.as_raw_fd(), Ordering::SeqCst);
+    // SAFETY: installing a handler that only does an async-signal-safe write.
+    let old = unsafe {
+        libc::signal(
+            libc::SIGWINCH,
+            report_handler as *const () as libc::sighandler_t,
+        )
+    };
+    INJECT_SIGNAL.store(libc::SIGWINCH, Ordering::SeqCst);
+
+    let result = spawn(&sh("printf spawned"));
+
+    INJECT_SIGNAL.store(0, Ordering::SeqCst);
+    // SAFETY: restoring the previous disposition.
+    unsafe { libc::signal(libc::SIGWINCH, old) };
+    let (master, child) = result.unwrap();
+    assert_eq!(read_to_end(&master), "spawned");
+    assert_eq!(child.wait().unwrap(), ExitStatus::Exited(0));
+    HANDLER_FD.store(-1, Ordering::SeqCst);
+
+    let mut buf = [0u8; 16];
+    let ran = rustix::io::read(&rd, &mut buf).unwrap_or(0);
+    assert_eq!(ran, 0, "parent's SIGWINCH handler ran in the forked child");
+}
+
+/// The parent's own mask is restored after spawn, and the exec'd child starts
+/// with nothing blocked even if the spawning thread had signals blocked.
+#[test]
+fn signal_masks_after_spawn() {
+    // Run on a fresh thread so the mask change cannot leak into other tests.
+    std::thread::spawn(|| {
+        // SAFETY: blocking SIGUSR2 in this thread only.
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGUSR2);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        }
+        let (master, child) = spawn(&sh("grep '^SigBlk' /proc/self/status")).unwrap();
+
+        let mask = thread_sigmask();
+        assert!(is_blocked(&mask, libc::SIGUSR2));
+        assert!(!is_blocked(&mask, libc::SIGUSR1));
+        assert!(!is_blocked(&mask, libc::SIGTERM));
+
+        let out = read_to_end(&master);
+        assert!(out.contains("SigBlk:\t0000000000000000"), "{out:?}");
+        assert_eq!(child.wait().unwrap().code(), 0);
+    })
+    .join()
+    .unwrap();
+}
