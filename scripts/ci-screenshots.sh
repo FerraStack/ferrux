@@ -33,20 +33,24 @@ adb shell am start -W -n "$ACTIVITY"
 sleep 8
 shot 01-launched
 
-# `input text` needs %s for spaces.
-adb shell input text 'echo%shello%sferrux'
-adb shell input keyevent KEYCODE_ENTER
-sleep 3
+# Tap the terminal to focus it and open the soft keyboard.
+adb shell input tap 160 300
+sleep 2
+
+# `input text` needs %s for spaces; avoid shell metacharacters (adb shell
+# passes the string through the device's sh).
+type_line() { adb shell input text "$1"; adb shell input keyevent KEYCODE_ENTER; sleep 2; }
+
+type_line 'echo%shello%sferrux'
 shot 02-echo
 
-adb shell input text 'uname%s-a;%sid;%sls%s/system%s|%shead%s-5'
-adb shell input keyevent KEYCODE_ENTER
-sleep 3
+type_line 'uname%s-a'
+type_line 'id'
+type_line 'ls%s--color=always%s/system'
 shot 03-commands
 
-adb shell input text 'ls%s--color=always%s/system'
-adb shell input keyevent KEYCODE_ENTER
-sleep 2
-shot 04-colors
+adb shell input keyevent KEYCODE_BACK   # hide the keyboard
+sleep 1
+shot 04-no-ime
 
 adb shell pidof "$PKG" || { echo "app is not running"; exit 1; }

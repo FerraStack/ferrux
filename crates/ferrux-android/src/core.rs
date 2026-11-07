@@ -21,7 +21,18 @@ pub fn manager() -> &'static SessionManager {
 
 /// Sets the layout from the app's real files dir. First call wins.
 pub fn init(files_dir: &str) {
-    let layout = LAYOUT.get_or_init(|| Layout::new(files_dir));
+    // Android reports /data/user/0/<pkg>/files; /data/data/<pkg> is the same
+    // directory and is the path packages are compiled for, so prefer it.
+    let canonical = |p: &str| std::fs::canonicalize(p).ok();
+    let layout = LAYOUT.get_or_init(|| {
+        if canonical(files_dir).is_some()
+            && canonical(files_dir) == canonical(ferrux_env::FILES_DIR)
+        {
+            Layout::default()
+        } else {
+            Layout::new(files_dir)
+        }
+    });
     if !layout.matches_compiled_prefix() {
         log::warn!(
             "files dir {} does not match the compiled prefix {}; packages built for {} will not work",

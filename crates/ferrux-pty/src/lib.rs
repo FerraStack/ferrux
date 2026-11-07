@@ -6,7 +6,8 @@
 //!
 //! * Everything the child needs (C strings, `argv`, `envp`, signal masks) is
 //!   prepared **before** `fork()`; the child then calls only
-//!   async-signal-safe libc functions and raw syscalls before `execve`.
+//!   async-signal-safe libc functions and raw syscalls before `execve`
+//!   (signal state is reset with raw syscalls to bypass ART's libsigchain).
 //! * No process-global `SIGCHLD` handler and no `waitpid(-1)`: other code in
 //!   the process (ART, libraries) owns other children. Each [`Child`] is
 //!   reaped by pid.
@@ -453,8 +454,6 @@ struct Prepared {
     _envp: Vec<CString>,
     argv_ptrs: Vec<*const libc::c_char>,
     envp_ptrs: Vec<*const libc::c_char>,
-    default_action: libc::sigaction,
-    empty_set: libc::sigset_t,
 }
 
 fn cstring(bytes: &[u8]) -> Result<CString, SpawnError> {
@@ -518,14 +517,6 @@ impl Prepared {
                 .chain(std::iter::once(std::ptr::null()))
                 .collect::<Vec<_>>()
         };
-        // SAFETY: zeroed sigaction/sigset_t are valid; we then set the fields.
-        let (default_action, empty_set) = unsafe {
-            let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = libc::SIG_DFL;
-            let mut set: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            (action, set)
-        };
         Ok(Self {
             exec_path,
             pts,
@@ -534,8 +525,6 @@ impl Prepared {
             envp_ptrs: null_terminated(&envp),
             _argv: argv,
             _envp: envp,
-            default_action,
-            empty_set,
         })
     }
 }
@@ -558,13 +547,33 @@ unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int) -> ! {
         };
 
         // ART blocks and ignores some signals; ignored dispositions and the
-        // mask survive execve, so reset both.
+        // mask survive execve, so reset both. Use raw syscalls: on Android,
+        // ART's libsigchain interposes sigaction()/sigprocmask() and, for
+        // signals it manages, logs a stack trace (allocating, taking locks)
+        // which can deadlock in a forked child. An all-zero kernel
+        // `struct sigaction` is SIG_DFL with no flags and an empty mask on
+        // every architecture, and an all-zero kernel sigset is "nothing
+        // blocked".
+        let zero = [0u64; 4];
+        let sigset_size = std::mem::size_of::<u64>();
         for sig in 1..65 {
             if sig != libc::SIGKILL && sig != libc::SIGSTOP {
-                libc::sigaction(sig, &p.default_action, std::ptr::null_mut());
+                libc::syscall(
+                    libc::SYS_rt_sigaction,
+                    sig,
+                    zero.as_ptr(),
+                    std::ptr::null_mut::<u64>(),
+                    sigset_size,
+                );
             }
         }
-        libc::sigprocmask(libc::SIG_SETMASK, &p.empty_set, std::ptr::null_mut());
+        libc::syscall(
+            libc::SYS_rt_sigprocmask,
+            libc::SIG_SETMASK,
+            zero.as_ptr(),
+            std::ptr::null_mut::<u64>(),
+            sigset_size,
+        );
 
         if libc::setsid() < 0 {
             fail(0);

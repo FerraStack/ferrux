@@ -162,6 +162,13 @@ class TerminalView @JvmOverloads constructor(
         updateFontMetrics()
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // Take focus as soon as we are on screen so hardware keys and IME
+        // input reach the terminal rather than the toolbar.
+        post { requestFocus() }
+    }
+
     /** Requests a redraw. Safe to call from any thread. */
     fun onScreenUpdated() {
         postInvalidateOnAnimation()
