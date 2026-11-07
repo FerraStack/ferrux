@@ -37,6 +37,45 @@ class TapCounter(private val timeoutMs: Long, private val slopPx: Float) {
     }
 }
 
+/**
+ * Turns pixel distances (drags, fling steps) into whole lines, carrying the
+ * remainder so slow drags still add up.
+ */
+class LineAccumulator {
+    private var remainder = 0f
+
+    /** Adds [px] (positive = towards older output) and returns the whole lines it completes. */
+    fun add(px: Float, lineHeight: Float): Int {
+        if (lineHeight <= 0f) return 0
+        remainder += px
+        val lines = (remainder / lineHeight).toInt()
+        remainder -= lines * lineHeight
+        return lines
+    }
+
+    fun reset() {
+        remainder = 0f
+    }
+}
+
+/** Position of the scrollback indicator's thumb. */
+object Scrollbar {
+    /**
+     * The thumb's top and height within a track of [trackHeight] pixels, for a
+     * screen of [rows] lines over [history] lines of scrollback, scrolled back by
+     * [offset] lines. The thumb is at least [minThumb] tall. Null when there is
+     * no history to show.
+     */
+    fun thumb(rows: Int, history: Int, offset: Int, trackHeight: Float, minThumb: Float): Pair<Float, Float>? {
+        if (history <= 0 || rows <= 0 || trackHeight <= 0f) return null
+        val total = (history + rows).toFloat()
+        val height = (trackHeight * rows / total).coerceIn(minOf(minThumb, trackHeight), trackHeight)
+        // offset 0 = thumb at the bottom; offset == history = thumb at the top.
+        val fraction = 1f - offset.coerceIn(0, history).toFloat() / history
+        return (trackHeight - height) * fraction to height
+    }
+}
+
 /** Recognises links in selected text. */
 object TerminalLinks {
     /** Schemes Ferrux opens; everything else (intent:, file:, javascript:, …) is refused. */

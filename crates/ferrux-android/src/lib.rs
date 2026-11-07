@@ -217,6 +217,40 @@ pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scroll<'caller>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_scrollGesture<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    lines: jint,
+    row: jint,
+    col: jint,
+) {
+    env.with_env(|_| -> JResult<()> {
+        core::scroll_gesture(id, lines, row, col);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_mouseEvent<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    button: jint,
+    action: jint,
+    row: jint,
+    col: jint,
+    mods: jint,
+) -> jboolean {
+    env.with_env(|_| -> JResult<jboolean> {
+        Ok(core::mouse_event(id, button, action, row, col, mods))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_snapshot<'caller>(
     mut env: EnvUnowned<'caller>,
     _class: JClass<'caller>,

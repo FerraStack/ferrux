@@ -16,6 +16,7 @@
 
 pub mod color;
 pub mod keys;
+pub mod mouse;
 pub mod selection;
 pub mod snapshot;
 
@@ -32,6 +33,7 @@ use alacritty_terminal::vte::ansi::{self, Color, CursorShape as EngineCursorShap
 
 pub use color::{Palette, Rgb};
 pub use keys::{Key, KeyMode, Modifiers};
+pub use mouse::{MouseAction, MouseButton, MouseMode};
 pub use selection::{SelectionKind, SelectionSpan, ViewPoint};
 pub use snapshot::{Cell, CellFlags, Combining, Cursor, CursorShape, Link, Modes, Snapshot};
 
@@ -244,6 +246,73 @@ impl Terminal {
         self.term.grid().display_offset()
     }
 
+    /// Lines of scrollback history above the screen.
+    pub fn history_size(&self) -> usize {
+        self.term.grid().history_size()
+    }
+
+    /// Handles a scroll gesture (touch drag, fling or mouse wheel) of
+    /// `lines` at a viewport cell; positive `lines` go towards older output.
+    ///
+    /// * Mouse reporting on: returns one wheel event per line for the program.
+    /// * Alternate screen with DECSET 1007 (the default): returns Up/Down
+    ///   arrow keys, so `less`, `vim` or `htop` scroll themselves.
+    /// * Otherwise scrolls the view through history and returns nothing.
+    ///
+    /// The caller writes the returned bytes to the program.
+    pub fn scroll_gesture(&mut self, lines: i32, row: usize, col: usize) -> Vec<u8> {
+        if lines == 0 {
+            return Vec::new();
+        }
+        let count = lines.unsigned_abs() as usize;
+        let modes = self.modes();
+        if modes.mouse_reporting {
+            let button = if lines > 0 {
+                MouseButton::WheelUp
+            } else {
+                MouseButton::WheelDown
+            };
+            let event = self.encode_mouse(button, MouseAction::Press, row, col, Modifiers::NONE);
+            return event.repeat(count);
+        }
+        if modes.alt_screen {
+            if !modes.alternate_scroll {
+                return Vec::new();
+            }
+            let key = if lines > 0 { Key::Up } else { Key::Down };
+            return self.encode_key(key, Modifiers::NONE).repeat(count);
+        }
+        self.scroll(lines);
+        Vec::new()
+    }
+
+    /// The mouse events the program asked for, and their encoding.
+    pub fn mouse_mode(&self) -> MouseMode {
+        let m = *self.term.mode();
+        MouseMode {
+            click: m.contains(TermMode::MOUSE_REPORT_CLICK),
+            drag: m.contains(TermMode::MOUSE_DRAG),
+            motion: m.contains(TermMode::MOUSE_MOTION),
+            sgr: m.contains(TermMode::SGR_MOUSE),
+            utf8: m.contains(TermMode::UTF8_MOUSE),
+        }
+    }
+
+    /// Bytes for a mouse event at a viewport cell, or nothing when the
+    /// program doesn't want it (see [`mouse::encode_mouse`]).
+    pub fn encode_mouse(
+        &self,
+        button: MouseButton,
+        action: MouseAction,
+        row: usize,
+        col: usize,
+        mods: Modifiers,
+    ) -> Vec<u8> {
+        let col = col.min(self.size.cols.saturating_sub(1) as usize);
+        let row = row.min(self.size.rows.saturating_sub(1) as usize);
+        mouse::encode_mouse(button, action, col, row, mods, self.mouse_mode())
+    }
+
     // ------------------------------------------------------------ selection
 
     /// Converts a viewport point to a grid point, clamped to the buffer.
@@ -355,6 +424,7 @@ impl Terminal {
             bracketed_paste: m.contains(TermMode::BRACKETED_PASTE),
             alt_screen: m.contains(TermMode::ALT_SCREEN),
             mouse_reporting: m.intersects(TermMode::MOUSE_MODE),
+            alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
         }
     }
 
@@ -420,6 +490,7 @@ impl Terminal {
         snap.rows = rows;
         snap.cols = cols;
         snap.display_offset = content.display_offset;
+        snap.history = self.term.grid().history_size();
         snap.default_fg = default_fg;
         snap.default_bg = default_bg;
         snap.modes = self.modes();

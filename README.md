@@ -65,6 +65,18 @@ Selecting text works like in a text field:
 
 OSC 8 hyperlinks get a faint underline.
 
+Scrolling:
+
+- Swipe to scroll through the scrollback (10 000 lines). A fling keeps going after you
+  lift your finger, and touching the screen stops it.
+- A thin scrollbar shows where you are. A round ↓ button in the corner returns to the
+  live screen, and so does typing.
+- In full-screen programs on the alternate screen (`less`, `vim`, `htop`), a swipe
+  sends Up/Down arrow keys (DECSET 1007).
+- If the program turned on mouse reporting (DECSET 1000/1002/1003, in X10, UTF-8 or SGR
+  encoding), a swipe sends wheel events and a tap is a left click.
+- Mouse wheels and trackpads scroll 3 lines per notch.
+
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
 [`android/terminal-view/licenses/JetBrainsMono-OFL.txt`](android/terminal-view/licenses/JetBrainsMono-OFL.txt).
@@ -138,7 +150,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 - **emulator** (pull requests and manual runs only) runs on two emulators:
   - **API 35 (Pixel 6):** launch, `echo`, `ls` and a colour test, the soft keyboard,
     two sessions in the drawer, CTRL, and text selection: long press, double and
-    triple tap, handle drag, Copy, Select all, Paste and OSC 8 hyperlinks.
+    triple tap, handle drag, Copy, Select all, Paste and OSC 8 hyperlinks; scrollback
+    drag, fling, scrollbar and jump button; arrow keys on the alternate screen; mouse
+    wheel and click reporting.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

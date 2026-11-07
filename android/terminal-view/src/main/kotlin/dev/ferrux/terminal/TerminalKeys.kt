@@ -26,11 +26,22 @@ object TerminalKeys {
     const val MOD_ALT = 2
     const val MOD_CTRL = 4
     const val MOD_META = 8
+
+    // Mouse buttons and actions for [FerruxNative.mouseEvent] (`ferrux_term::mouse`).
+    const val MOUSE_LEFT = 0
+    const val MOUSE_MIDDLE = 1
+    const val MOUSE_RIGHT = 2
+    const val MOUSE_NONE = 3
+    const val MOUSE_WHEEL_UP = 4
+    const val MOUSE_WHEEL_DOWN = 5
+    const val MOUSE_PRESS = 0
+    const val MOUSE_RELEASE = 1
+    const val MOUSE_MOTION = 2
 }
 
 /** Layout of the IntArray filled by [FerruxNative.snapshot] (must match the Rust side). */
 object SnapshotLayout {
-    const val HEADER_SIZE = 8
+    const val HEADER_SIZE = 10
     const val INTS_PER_CELL = 4
 
     // Header indices.
@@ -42,6 +53,10 @@ object SnapshotLayout {
     const val H_DISPLAY_OFFSET = 5
     const val H_DEFAULT_BG = 6
     const val H_MODES = 7
+
+    /** Lines of scrollback above the screen (0 on the alternate screen). */
+    const val H_HISTORY = 8
+    const val H_DEFAULT_FG = 9
 
     // Cursor shape (low byte) and flags.
     const val CURSOR_HIDDEN = 0
@@ -56,6 +71,9 @@ object SnapshotLayout {
     const val MODE_BRACKETED_PASTE = 1 shl 1
     const val MODE_ALT_SCREEN = 1 shl 2
     const val MODE_MOUSE = 1 shl 3
+
+    /** DECSET 1007: scrolling on the alternate screen sends arrow keys. */
+    const val MODE_ALTERNATE_SCROLL = 1 shl 4
 
     // Per-cell offsets.
     const val C_CODEPOINT = 0

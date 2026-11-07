@@ -37,6 +37,50 @@ class TapCounterTest {
     private fun assertEquals(expected: Int, actual: Int, message: String) = assertEquals(message, expected, actual)
 }
 
+class LineAccumulatorTest {
+    @Test
+    fun carriesTheRemainderAcrossSteps() {
+        val acc = LineAccumulator()
+        assertEquals(0, acc.add(10f, 30f))
+        assertEquals(0, acc.add(10f, 30f))
+        assertEquals(1, acc.add(15f, 30f)) // 35 px
+        assertEquals(2, acc.add(55f, 30f)) // 5 + 55 = 60 px
+        assertEquals(-1, acc.add(-30f, 30f))
+        acc.reset()
+        assertEquals(0, acc.add(29f, 30f))
+        assertEquals(0, acc.add(1f, 0f), "no line height yet")
+    }
+
+    private fun assertEquals(expected: Int, actual: Int, message: String) = assertEquals(message, expected, actual)
+}
+
+class ScrollbarTest {
+    @Test
+    fun thumbTracksTheOffset() {
+        // 20 rows over 180 lines of history in a 1000 px track: thumb is 100 px.
+        val bottom = Scrollbar.thumb(rows = 20, history = 180, offset = 0, trackHeight = 1000f, minThumb = 48f)!!
+        assertEquals(900f, bottom.first, 0.01f)
+        assertEquals(100f, bottom.second, 0.01f)
+        val top = Scrollbar.thumb(20, 180, 180, 1000f, 48f)!!
+        assertEquals(0f, top.first, 0.01f)
+        val middle = Scrollbar.thumb(20, 180, 90, 1000f, 48f)!!
+        assertEquals(450f, middle.first, 0.01f)
+    }
+
+    @Test
+    fun longHistoryKeepsAMinimumThumb() {
+        val thumb = Scrollbar.thumb(20, 10_000, 0, 1000f, 48f)!!
+        assertEquals(48f, thumb.second, 0.01f)
+        assertEquals(952f, thumb.first, 0.01f)
+    }
+
+    @Test
+    fun noHistoryNoThumb() {
+        assertNull(Scrollbar.thumb(20, 0, 0, 1000f, 48f))
+        assertNull(Scrollbar.thumb(0, 10, 0, 1000f, 48f))
+    }
+}
+
 class TerminalLinksTest {
     @Test
     fun recognisesUrlsAndStripsSentencePunctuation() {

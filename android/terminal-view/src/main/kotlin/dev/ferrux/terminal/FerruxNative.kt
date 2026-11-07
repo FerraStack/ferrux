@@ -68,6 +68,20 @@ object FerruxNative {
     @JvmStatic external fun scroll(id: Long, lines: Int)
 
     /**
+     * A scroll gesture (drag, fling, wheel) at a viewport cell; positive [lines] go
+     * towards older output. Scrolls history on the main screen, sends Up/Down keys
+     * on the alternate screen (DECSET 1007), or wheel events when the program
+     * enabled mouse reporting.
+     */
+    @JvmStatic external fun scrollGesture(id: Long, lines: Int, row: Int, col: Int)
+
+    /**
+     * Reports a mouse event (see the `MOUSE_*` codes in [TerminalKeys]) at a viewport
+     * cell. Returns false when the program did not ask for this kind of event.
+     */
+    @JvmStatic external fun mouseEvent(id: Long, button: Int, action: Int, row: Int, col: Int, mods: Int): Boolean
+
+    /**
      * Copies the visible screen into [out] using the [SnapshotLayout] format.
      *
      * @return the number of ints written, `-(needed size)` if [out] is too small,

@@ -9,7 +9,10 @@ use std::time::Duration;
 use ferrux_env::Layout;
 use ferrux_pty::{ExecMode, SpawnConfig, SpawnError, WinSize};
 use ferrux_session::{Session, SessionEvent, SessionId, SessionManager};
-use ferrux_term::{Key, Modifiers, SelectionKind, Snapshot, TermConfig, TermSize, ViewPoint};
+use ferrux_term::{
+    Key, Modifiers, MouseAction, MouseButton, SelectionKind, Snapshot, TermConfig, TermSize,
+    ViewPoint,
+};
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
 static LAYOUT: OnceLock<Layout> = OnceLock::new();
@@ -151,6 +154,32 @@ pub fn snapshot(id: i64, capacity: usize, sink: impl FnOnce(&[i32])) -> i32 {
     })
 }
 
+/// A scroll gesture at a viewport cell; see `Session::scroll_gesture`.
+pub fn scroll_gesture(id: i64, lines: i32, row: i32, col: i32) {
+    if let Some(s) = session(id) {
+        s.scroll_gesture(lines, row.max(0) as usize, col.max(0) as usize);
+    }
+}
+
+/// Reports a mouse event (codes: see `MouseButton::code` / `MouseAction::code`).
+/// Returns whether the program wanted it.
+pub fn mouse_event(id: i64, button: i32, action: i32, row: i32, col: i32, mods: i32) -> bool {
+    let Some(s) = session(id) else { return false };
+    let (Some(button), Some(action)) = (
+        MouseButton::from_code(button as u32),
+        MouseAction::from_code(action as u32),
+    ) else {
+        return false;
+    };
+    s.mouse(
+        button,
+        action,
+        row.max(0) as usize,
+        col.max(0) as usize,
+        Modifiers::from_bits_truncate(mods as u32),
+    )
+}
+
 fn view_point(row: i32, col: i32) -> ViewPoint {
     ViewPoint::new(row, col.max(0) as usize)
 }
@@ -227,6 +256,9 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    /// Ints before the first cell in the integer encoding.
+    const H: usize = Snapshot::HEADER_LEN;
+
     #[test]
     fn session_round_trip_through_core_api() {
         let id = create_session(
@@ -249,11 +281,11 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(10), "no output");
             assert_eq!(
                 snapshot(id, 3, |_| unreachable!()),
-                -(8 + 5 * 20 * 4 + 1 + 6)
+                -((H + 5 * 20 * 4 + 1 + 6) as i32)
             );
             let n = snapshot(id, 1000, |data| ints = data.to_vec());
-            assert_eq!(n, 415);
-            if ints[8] == 'h' as i32 {
+            assert_eq!(n, (H + 5 * 20 * 4 + 1 + 6) as i32);
+            if ints[H] == 'h' as i32 {
                 break;
             }
             seq = await_change(seq, 100);
@@ -266,7 +298,7 @@ mod tests {
         assert!(!start_selection(id, 9, 0, 1), "unknown kind");
         assert_eq!(selection_text(id).as_deref(), Some("hi"));
         snapshot(id, 1000, |d| ints = d.to_vec());
-        let sel = 8 + 5 * 20 * 4 + 1;
+        let sel = H + 5 * 20 * 4 + 1;
         assert_eq!(&ints[sel..sel + 5], &[1, 0, 0, 0, 1]);
         set_selection(id, (0, 1), (0, 1), false);
         assert_eq!(selection_text(id).as_deref(), Some("i"));
@@ -280,8 +312,14 @@ mod tests {
         resize(id, 6, 30);
         assert_eq!(
             snapshot(id, 1000, |d| ints = d.to_vec()),
-            8 + 6 * 30 * 4 + 1 + 6
+            (H + 6 * 30 * 4 + 1 + 6) as i32
         );
+        // No mouse reporting in a plain shell; scrolling an empty history is a no-op.
+        assert!(!mouse_event(id, 0, 0, 0, 0, 0));
+        assert!(!mouse_event(id, 9, 0, 0, 0, 0), "unknown button");
+        scroll_gesture(id, 3, 0, 0);
+        snapshot(id, 1000, |d| ints = d.to_vec());
+        assert_eq!(ints[5], 0, "display offset");
         assert!(send_key(id, Key::Enter.code() as i32, 0));
         assert!(!send_key(id, 999, 0));
 
