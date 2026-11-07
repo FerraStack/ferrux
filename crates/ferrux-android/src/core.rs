@@ -9,7 +9,7 @@ use std::time::Duration;
 use ferrux_env::Layout;
 use ferrux_pty::{ExecMode, SpawnConfig, SpawnError, WinSize};
 use ferrux_session::{Session, SessionEvent, SessionId, SessionManager};
-use ferrux_term::{Key, Modifiers, Snapshot, TermConfig, TermSize};
+use ferrux_term::{Key, Modifiers, SelectionKind, Snapshot, TermConfig, TermSize, ViewPoint};
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
 static LAYOUT: OnceLock<Layout> = OnceLock::new();
@@ -151,6 +151,50 @@ pub fn snapshot(id: i64, capacity: usize, sink: impl FnOnce(&[i32])) -> i32 {
     })
 }
 
+fn view_point(row: i32, col: i32) -> ViewPoint {
+    ViewPoint::new(row, col.max(0) as usize)
+}
+
+/// Starts a selection (`kind`: see [`SelectionKind::code`]). Returns false
+/// for an unknown session or kind.
+pub fn start_selection(id: i64, kind: i32, row: i32, col: i32) -> bool {
+    let (Some(s), Some(kind)) = (session(id), SelectionKind::from_code(kind as u32)) else {
+        return false;
+    };
+    s.with_terminal(|t| t.start_selection(kind, view_point(row, col)));
+    true
+}
+
+pub fn update_selection(id: i64, row: i32, col: i32) {
+    if let Some(s) = session(id) {
+        s.with_terminal(|t| t.update_selection(view_point(row, col)));
+    }
+}
+
+pub fn set_selection(id: i64, start: (i32, i32), end: (i32, i32), block: bool) {
+    if let Some(s) = session(id) {
+        let (start, end) = (view_point(start.0, start.1), view_point(end.0, end.1));
+        s.with_terminal(|t| t.set_selection(start, end, block));
+    }
+}
+
+pub fn select_all(id: i64) {
+    if let Some(s) = session(id) {
+        s.with_terminal(|t| t.select_all());
+    }
+}
+
+pub fn clear_selection(id: i64) {
+    if let Some(s) = session(id) {
+        s.with_terminal(|t| t.clear_selection());
+    }
+}
+
+/// The selected text, or `None` if nothing is selected.
+pub fn selection_text(id: i64) -> Option<String> {
+    session(id)?.with_terminal(|t| t.selection_text())
+}
+
 /// The visible screen as text (rows joined by `\n`), for accessibility and
 /// debugging.
 pub fn screen_text(id: i64) -> Option<String> {
@@ -203,9 +247,12 @@ mod tests {
         let mut ints = Vec::new();
         loop {
             assert!(start.elapsed() < Duration::from_secs(10), "no output");
-            assert_eq!(snapshot(id, 3, |_| unreachable!()), -(8 + 5 * 20 * 4 + 1));
+            assert_eq!(
+                snapshot(id, 3, |_| unreachable!()),
+                -(8 + 5 * 20 * 4 + 1 + 6)
+            );
             let n = snapshot(id, 1000, |data| ints = data.to_vec());
-            assert_eq!(n, 409);
+            assert_eq!(n, 415);
             if ints[8] == 'h' as i32 {
                 break;
             }
@@ -213,10 +260,27 @@ mod tests {
         }
         assert_eq!(&ints[..2], &[5, 20]);
         assert_eq!(screen_text(id).as_deref(), Some("hi"));
+
+        // Selection round trip: word, then explicit range, then cleared.
+        assert!(start_selection(id, 1, 0, 1));
+        assert!(!start_selection(id, 9, 0, 1), "unknown kind");
+        assert_eq!(selection_text(id).as_deref(), Some("hi"));
+        snapshot(id, 1000, |d| ints = d.to_vec());
+        let sel = 8 + 5 * 20 * 4 + 1;
+        assert_eq!(&ints[sel..sel + 5], &[1, 0, 0, 0, 1]);
+        set_selection(id, (0, 1), (0, 1), false);
+        assert_eq!(selection_text(id).as_deref(), Some("i"));
+        update_selection(id, 0, -3);
+        assert_eq!(selection_text(id).as_deref(), Some("hi"), "col clamps to 0");
+        select_all(id);
+        assert_eq!(selection_text(id).as_deref(), Some("hi"));
+        clear_selection(id);
+        assert_eq!(selection_text(id), None);
+
         resize(id, 6, 30);
         assert_eq!(
             snapshot(id, 1000, |d| ints = d.to_vec()),
-            8 + 6 * 30 * 4 + 1
+            8 + 6 * 30 * 4 + 1 + 6
         );
         assert!(send_key(id, Key::Enter.code() as i32, 0));
         assert!(!send_key(id, 999, 0));
@@ -234,6 +298,8 @@ mod tests {
         destroy_session(id);
         assert!(poll_events(id).is_none());
         assert!(screen_text(id).is_none());
+        assert!(selection_text(id).is_none());
+        assert!(!start_selection(id, 0, 0, 0));
         assert_eq!(snapshot(id, 1000, |_| {}), 0);
     }
 

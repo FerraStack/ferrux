@@ -58,6 +58,8 @@ pub struct Palette {
     pub foreground: Rgb,
     pub background: Rgb,
     pub cursor: Rgb,
+    /// Background of selected cells (their foreground is kept).
+    pub selection: Rgb,
 }
 
 /// The default theme, "Ferrux Night": a dark, low-glare palette tuned for
@@ -74,7 +76,8 @@ pub struct Palette {
 /// | 6 /14 | cyan    | `#5FD1C9` | `#8CE6DF` |
 /// | 7 /15 | white   | `#C9D1DC` | `#F2F5F9` |
 ///
-/// Foreground `#D6DCE5`, background `#0E1116`, cursor `#F29E4C`.
+/// Foreground `#D6DCE5`, background `#0E1116`, cursor `#F29E4C`, selection
+/// `#264166`.
 pub const FERRUX_NIGHT_ANSI: [u32; 16] = [
     0x1c2029, 0xf0717a, 0x9bd68a, 0xebc47a, 0x6cb4f5, 0xc79bf2, 0x5fd1c9, 0xc9d1dc, //
     0x4e5666, 0xff8e96, 0xb6eba3, 0xf7d99b, 0x92cbff, 0xddb8ff, 0x8ce6df, 0xf2f5f9,
@@ -101,6 +104,7 @@ impl Default for Palette {
             foreground: Rgb::from_u32(0xd6dce5),
             background: Rgb::from_u32(0x0e1116),
             cursor: Rgb::from_u32(0xf29e4c),
+            selection: Rgb::from_u32(0x264166),
         }
     }
 }

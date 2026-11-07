@@ -16,6 +16,7 @@
 
 pub mod color;
 pub mod keys;
+pub mod selection;
 pub mod snapshot;
 
 use std::sync::{Arc, Mutex};
@@ -23,13 +24,16 @@ use std::time::Instant;
 
 use alacritty_terminal::event::{Event as EngineEvent, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::cell::{Flags, Hyperlink};
 use alacritty_terminal::term::{self, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{self, Color, CursorShape as EngineCursorShape, NamedColor};
 
 pub use color::{Palette, Rgb};
 pub use keys::{Key, KeyMode, Modifiers};
-pub use snapshot::{Cell, CellFlags, Combining, Cursor, CursorShape, Modes, Snapshot};
+pub use selection::{SelectionKind, SelectionSpan, ViewPoint};
+pub use snapshot::{Cell, CellFlags, Combining, Cursor, CursorShape, Link, Modes, Snapshot};
 
 /// Terminal dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +94,14 @@ pub struct TermConfig {
     pub palette: Palette,
     /// Render bold text in the bright variant of ANSI colors 0–7.
     pub bold_is_bright: bool,
+    /// Characters that end a word for word selection (double tap, long
+    /// press). See [`WORD_SEPARATORS`].
+    pub word_separators: String,
 }
+
+/// Default word separators: like alacritty's, but without `:`, so a long
+/// press selects a whole URL or `src/main.rs:10:5` rather than a fragment.
+pub const WORD_SEPARATORS: &str = ",│`|\"' ()[]{}<>\t";
 
 impl Default for TermConfig {
     fn default() -> Self {
@@ -98,6 +109,7 @@ impl Default for TermConfig {
             scrollback: 10_000,
             palette: Palette::default(),
             bold_is_bright: true,
+            word_separators: WORD_SEPARATORS.to_owned(),
         }
     }
 }
@@ -164,6 +176,7 @@ impl Terminal {
         let listener = Listener::default();
         let engine_config = term::Config {
             scrolling_history: config.scrollback,
+            semantic_escape_chars: config.word_separators.clone(),
             ..term::Config::default()
         };
         let term = Term::new(engine_config, &EngineSize(size), listener.clone());
@@ -229,6 +242,104 @@ impl Terminal {
 
     pub fn display_offset(&self) -> usize {
         self.term.grid().display_offset()
+    }
+
+    // ------------------------------------------------------------ selection
+
+    /// Converts a viewport point to a grid point, clamped to the buffer.
+    fn grid_point(&self, at: ViewPoint) -> Point {
+        let offset = self.term.grid().display_offset() as i32;
+        let line = Line(at.row.saturating_sub(offset))
+            .max(self.term.topmost_line())
+            .min(self.term.bottommost_line());
+        let column = Column(at.col.min(self.term.columns().saturating_sub(1)));
+        Point::new(line, column)
+    }
+
+    fn view_point(&self, point: Point) -> ViewPoint {
+        let offset = self.term.grid().display_offset() as i32;
+        ViewPoint::new(point.line.0 + offset, point.column.0)
+    }
+
+    /// Starts a selection at a viewport cell. A [`SelectionKind::Word`] or
+    /// [`SelectionKind::Line`] selection immediately covers the word or line
+    /// there; the others cover that one cell.
+    pub fn start_selection(&mut self, kind: SelectionKind, at: ViewPoint) {
+        let ty = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Word => SelectionType::Semantic,
+            SelectionKind::Line => SelectionType::Lines,
+            SelectionKind::Block => SelectionType::Block,
+        };
+        let point = self.grid_point(at);
+        let mut selection = Selection::new(ty, point, Side::Left);
+        selection.update(point, Side::Right);
+        self.term.selection = Some(selection);
+    }
+
+    /// Moves the free end of the selection (the anchor stays where the
+    /// selection started). Word and line selections keep expanding to whole
+    /// words or lines. Both end cells are included.
+    pub fn update_selection(&mut self, to: ViewPoint) {
+        let point = self.grid_point(to);
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, Side::Right);
+            selection.include_all();
+        }
+    }
+
+    /// Replaces the selection with the cells from `start` to `end`, both
+    /// inclusive and in either order (dragging a selection handle).
+    pub fn set_selection(&mut self, start: ViewPoint, end: ViewPoint, block: bool) {
+        let ty = if block {
+            SelectionType::Block
+        } else {
+            SelectionType::Simple
+        };
+        let mut selection = Selection::new(ty, self.grid_point(start), Side::Left);
+        selection.update(self.grid_point(end), Side::Right);
+        selection.include_all();
+        self.term.selection = Some(selection);
+    }
+
+    /// Selects everything: the scrollback history and the screen, down to the
+    /// last line with content (or the cursor line), not the blank rows below.
+    pub fn select_all(&mut self) {
+        let start = Point::new(self.term.topmost_line(), Column(0));
+        let grid = self.term.grid();
+        let cursor_line = grid.cursor.point.line;
+        let mut last = self.term.bottommost_line();
+        while last > cursor_line && grid[last].is_clear() {
+            last -= 1;
+        }
+        let end = Point::new(last, self.term.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, start, Side::Left);
+        selection.update(end, Side::Right);
+        self.term.selection = Some(selection);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// The selected cells in viewport coordinates, if anything is selected.
+    /// The selection disappears by itself when the program overwrites it.
+    pub fn selection(&self) -> Option<SelectionSpan> {
+        let range = self.term.selection.as_ref()?.to_range(&self.term)?;
+        Some(SelectionSpan {
+            start: self.view_point(range.start),
+            end: self.view_point(range.end),
+            block: range.is_block,
+        })
+    }
+
+    /// The selected text, soft-wrapped lines rejoined. Trailing whitespace
+    /// and newlines are dropped, so pasting a copied line into a shell never
+    /// runs it by accident. `None` when nothing (or only blanks) is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        let text = self.term.selection_to_string()?;
+        let trimmed = text.trim_end();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
     }
 
     /// Current title, if the program set one.
@@ -314,6 +425,10 @@ impl Terminal {
         snap.modes = self.modes();
         snap.cells.clear();
         snap.combining.clear();
+        snap.links.clear();
+        snap.selection = self.selection();
+        let selection = content.selection;
+        let mut last_link: Option<Hyperlink> = None;
         snap.cells.resize(
             rows * cols,
             Cell {
@@ -341,6 +456,41 @@ impl Terminal {
                     cell: index,
                     chars: chars.to_vec(),
                 });
+            }
+            if selection.is_some_and(|s| s.contains(indexed.point)) {
+                cell.flags.insert(CellFlags::SELECTED);
+                cell.bg = palette.selection;
+                // Select both halves of a wide character.
+                if cell.flags.contains(CellFlags::WIDE_SPACER)
+                    && point.column.0 > 0
+                    && let Some(lead) = snap.cells.get_mut(index - 1)
+                    && lead.flags.contains(CellFlags::WIDE)
+                {
+                    lead.flags.insert(CellFlags::SELECTED);
+                    lead.bg = palette.selection;
+                }
+            } else if index > 0
+                && cell.flags.contains(CellFlags::WIDE_SPACER)
+                && snap.cells[index - 1].flags.contains(CellFlags::SELECTED)
+            {
+                cell.flags.insert(CellFlags::SELECTED);
+                cell.bg = palette.selection;
+            }
+            if let Some(link) = src.hyperlink() {
+                cell.flags.insert(CellFlags::HYPERLINK);
+                match snap.links.last_mut() {
+                    Some(prev) if prev.end == index && last_link.as_ref() == Some(&link) => {
+                        prev.end = index + 1;
+                    }
+                    _ => {
+                        snap.links.push(Link {
+                            start: index,
+                            end: index + 1,
+                            uri: link.uri().to_owned(),
+                        });
+                        last_link = Some(link);
+                    }
+                }
             }
             snap.cells[index] = cell;
         }

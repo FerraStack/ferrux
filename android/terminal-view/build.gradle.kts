@@ -27,3 +27,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
+dependencies {
+    // Plain JVM tests for the pure-Kotlin parts (layout decoding, tap counting, links).
+    testImplementation(libs.junit)
+}

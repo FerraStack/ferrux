@@ -81,15 +81,81 @@ object SnapshotLayout {
     /** Last cell of a soft-wrapped row (the line continues on the next row). */
     const val F_WRAPPED = 1 shl 11
 
+    /** Selected; the cell's background is already the selection colour. */
+    const val F_SELECTED = 1 shl 12
+
+    /** Part of an OSC 8 hyperlink (see the link table). */
+    const val F_HYPERLINK = 1 shl 13
+
+    /** Ints in the selection record: `kind, startRow, startCol, endRow, endCol`. */
+    const val SELECTION_SIZE = 5
+
+    // Selection record kinds.
+    const val SELECTION_NONE = 0
+    const val SELECTION_TEXT = 1
+    const val SELECTION_BLOCK = 2
+
     /**
-     * Minimum size for a [rows]×[cols] snapshot. After the cells comes the
-     * combining table: `count`, then `count` × (`cellIndex, n, codepoint × n`).
+     * Minimum size for a [rows]×[cols] snapshot. After the cells come three
+     * variable-length sections:
+     * 1. the combining table: `count`, then `count` × (`cellIndex, n, codepoint × n`);
+     * 2. the selection record ([SELECTION_SIZE] ints, viewport rows, both ends inclusive);
+     * 3. the link table: `count`, then `count` × (`startCell, endCell, n, codepoint × n`).
      * When it doesn't fit, [FerruxNative.snapshot] returns the exact size needed.
      */
-    fun requiredSize(rows: Int, cols: Int): Int = HEADER_SIZE + rows * cols * INTS_PER_CELL + 1
+    fun requiredSize(rows: Int, cols: Int): Int =
+        HEADER_SIZE + rows * cols * INTS_PER_CELL + 1 + SELECTION_SIZE + 1
 
     /** Offset of the combining table in a snapshot with [rows]×[cols] cells. */
     fun combiningOffset(rows: Int, cols: Int): Int = HEADER_SIZE + rows * cols * INTS_PER_CELL
+
+    /**
+     * Offset of the selection record in snapshot [s] of length [n], or -1 if
+     * the snapshot is truncated.
+     */
+    fun selectionOffset(s: IntArray, rows: Int, cols: Int, n: Int): Int {
+        var i = combiningOffset(rows, cols)
+        if (i >= n) return -1
+        val count = s[i++]
+        repeat(count) {
+            if (i + 2 > n) return -1
+            i += 2 + s[i + 1]
+        }
+        return if (i + SELECTION_SIZE <= n) i else -1
+    }
+
+    /** One OSC 8 hyperlink: cells [start, end) in row-major order. */
+    data class Link(val start: Int, val end: Int, val uri: String) {
+        operator fun contains(cell: Int) = cell in start until end
+    }
+
+    /** Decodes the link table that starts at [offset] into [out] (cleared first). */
+    fun readLinks(s: IntArray, offset: Int, n: Int, out: MutableList<Link>) {
+        out.clear()
+        if (offset < 0 || offset >= n) return
+        var i = offset
+        val count = s[i++]
+        repeat(count) {
+            if (i + 3 > n) return
+            val start = s[i]
+            val end = s[i + 1]
+            val len = s[i + 2]
+            i += 3
+            if (len < 0 || i + len > n) return
+            val uri = StringBuilder(len)
+            for (k in 0 until len) uri.appendCodePoint(s[i + k])
+            out.add(Link(start, end, uri.toString()))
+            i += len
+        }
+    }
+}
+
+/** Selection kinds for [FerruxNative.startSelection] (must match `ferrux_term::SelectionKind`). */
+object SelectionKind {
+    const val SIMPLE = 0
+    const val WORD = 1
+    const val LINE = 2
+    const val BLOCK = 3
 }
 
 /** A decoded entry from [FerruxNative.pollEvents]. */

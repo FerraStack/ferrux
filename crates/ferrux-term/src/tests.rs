@@ -198,8 +198,13 @@ fn int_encoding_layout() {
     let s = t.snapshot();
     let mut out = vec![0i32; s.encoded_len()];
     assert_eq!(s.encode_ints(&mut out[..5]), None);
-    assert_eq!(s.encode_ints(&mut out), Some(8 + 6 * 4 + 1));
+    assert_eq!(s.encode_ints(&mut out), Some(8 + 6 * 4 + 1 + 5 + 1));
     assert_eq!(out[8 + 6 * 4], 0, "empty combining table");
+    assert_eq!(
+        &out[8 + 6 * 4 + 1..],
+        &[0, 0, 0, 0, 0, 0],
+        "no selection, no links"
+    );
     assert_eq!(&out[..6], &[2, 3, 0, 1, 1, 0]);
     assert_eq!(out[6] as u32, Palette::default().background.to_argb());
     assert_eq!(out[8], 'A' as i32);
@@ -228,4 +233,247 @@ fn combining_marks_are_kept() {
     let table = &out[8 + 3 * 20 * 4..];
     assert_eq!(table[0] as usize, s.combining.len());
     assert_eq!(&table[1..4], &[0, 1, 0x301]);
+}
+
+// ---------------------------------------------------------------- selection
+
+fn vp(row: i32, col: usize) -> ViewPoint {
+    ViewPoint::new(row, col)
+}
+
+fn selected_cols(s: &Snapshot, row: usize) -> Vec<usize> {
+    (0..s.cols)
+        .filter(|&c| s.cell(row, c).flags.contains(CellFlags::SELECTED))
+        .collect()
+}
+
+#[test]
+fn word_selection_covers_the_word_and_recolors_it() {
+    let mut t = term(3, 20);
+    t.feed(b"echo hello-world ok");
+    t.start_selection(SelectionKind::Word, vp(0, 8));
+    assert_eq!(t.selection_text().as_deref(), Some("hello-world"));
+    let s = t.snapshot();
+    assert_eq!(
+        s.selection,
+        Some(SelectionSpan {
+            start: vp(0, 5),
+            end: vp(0, 15),
+            block: false
+        })
+    );
+    assert_eq!(selected_cols(&s, 0), (5..=15).collect::<Vec<_>>());
+    assert_eq!(s.cell(0, 5).bg, Palette::default().selection);
+    assert_eq!(s.cell(0, 5).fg, Palette::default().foreground, "fg is kept");
+    assert_eq!(s.cell(0, 4).bg, Palette::default().background);
+}
+
+#[test]
+fn word_selection_keeps_urls_and_paths_whole() {
+    let mut t = term(3, 60);
+    t.feed(b"open https://ferrux.dev/docs?a=1 or src/main.rs:10:5, ok");
+    t.start_selection(SelectionKind::Word, vp(0, 12));
+    assert_eq!(
+        t.selection_text().as_deref(),
+        Some("https://ferrux.dev/docs?a=1")
+    );
+    t.start_selection(SelectionKind::Word, vp(0, 40));
+    assert_eq!(t.selection_text().as_deref(), Some("src/main.rs:10:5"));
+}
+
+#[test]
+fn dragging_extends_by_words_in_both_directions() {
+    let mut t = term(3, 30);
+    t.feed(b"one two three\r\nfour five");
+    t.start_selection(SelectionKind::Word, vp(0, 5)); // "two"
+    t.update_selection(vp(1, 6)); // into "five"
+    assert_eq!(t.selection_text().as_deref(), Some("two three\nfour five"));
+    t.update_selection(vp(0, 0)); // back before the anchor
+    assert_eq!(t.selection_text().as_deref(), Some("one two"));
+}
+
+#[test]
+fn line_selection_follows_soft_wraps_and_drops_the_newline() {
+    let mut t = term(4, 10);
+    t.feed(b"$ 0123456789abc\r\nnext");
+    t.start_selection(SelectionKind::Line, vp(1, 2));
+    // Trailing newline removed so a pasted line never runs by itself.
+    assert_eq!(t.selection_text().as_deref(), Some("$ 0123456789abc"));
+    let span = t.selection().unwrap();
+    assert_eq!((span.start, span.end), (vp(0, 0), vp(1, 9)));
+}
+
+#[test]
+fn set_selection_is_inclusive_in_either_order() {
+    let mut t = term(3, 20);
+    t.feed(b"abcdef\r\nghijkl");
+    t.set_selection(vp(0, 2), vp(1, 1), false);
+    assert_eq!(t.selection_text().as_deref(), Some("cdef\ngh"));
+    t.set_selection(vp(1, 1), vp(0, 2), false);
+    assert_eq!(t.selection_text().as_deref(), Some("cdef\ngh"));
+    t.set_selection(vp(0, 3), vp(0, 3), false);
+    assert_eq!(t.selection_text().as_deref(), Some("d"));
+    t.set_selection(vp(0, 1), vp(1, 2), true);
+    assert_eq!(t.selection_text().as_deref(), Some("bc\nhi"));
+    assert!(t.snapshot().selection.unwrap().block);
+}
+
+#[test]
+fn simple_selection_and_blank_selection() {
+    let mut t = term(3, 20);
+    t.feed(b"abc");
+    t.start_selection(SelectionKind::Simple, vp(0, 1));
+    assert_eq!(t.selection_text().as_deref(), Some("b"));
+    t.update_selection(vp(0, 2));
+    assert_eq!(t.selection_text().as_deref(), Some("bc"));
+    // Only blanks selected: nothing to copy.
+    t.start_selection(SelectionKind::Word, vp(2, 5));
+    assert_eq!(t.selection_text(), None);
+    t.clear_selection();
+    assert_eq!(t.selection(), None);
+    assert!(selected_cols(&t.snapshot(), 0).is_empty());
+}
+
+#[test]
+fn select_all_includes_history() {
+    let mut t = term(3, 10);
+    for i in 0..6 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    t.select_all();
+    assert_eq!(
+        t.selection_text().as_deref(),
+        Some("line0\nline1\nline2\nline3\nline4\nline5")
+    );
+    let span = t.selection().unwrap();
+    assert!(span.start.row < 0, "starts in history: {span:?}");
+    assert_eq!(span.end, vp(2, 9));
+}
+
+#[test]
+fn select_all_stops_at_the_last_line_with_content() {
+    let mut t = term(10, 10);
+    t.feed(b"one\r\ntwo\r\n$ ");
+    t.select_all();
+    let span = t.selection().unwrap();
+    assert_eq!((span.start, span.end), (vp(0, 0), vp(2, 9)));
+    assert_eq!(t.selection_text().as_deref(), Some("one\ntwo\n$"));
+    // Content below the cursor still counts.
+    t.feed(b"\x1b[8;1Hlow\x1b[3;3H");
+    t.select_all();
+    assert_eq!(t.selection().unwrap().end, vp(7, 9));
+}
+
+#[test]
+fn selection_stays_on_its_text_while_scrolling() {
+    let mut t = term(3, 10);
+    for i in 0..8 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // Screen: line6, line7, "" ; select "line6".
+    t.start_selection(SelectionKind::Word, vp(0, 1));
+    assert_eq!(t.selection_text().as_deref(), Some("line6"));
+    t.scroll(2);
+    let s = t.snapshot();
+    assert_eq!(s.row_text(2), "line6");
+    assert_eq!(s.selection.unwrap().start, vp(2, 0));
+    assert_eq!(selected_cols(&s, 2), (0..=4).collect::<Vec<_>>());
+    t.scroll_to_bottom();
+    // New output pushes the selected line into history (negative row).
+    t.feed(b"more\r\nmore\r\n");
+    let s = t.snapshot();
+    assert_eq!(s.selection.unwrap().start.row, -2);
+    assert_eq!(t.selection_text().as_deref(), Some("line6"));
+    assert!((0..3).all(|r| selected_cols(&s, r).is_empty()));
+}
+
+#[test]
+fn overwriting_the_selection_clears_it() {
+    let mut t = term(3, 10);
+    t.feed(b"hello");
+    t.start_selection(SelectionKind::Word, vp(0, 0));
+    assert!(t.selection().is_some());
+    t.feed(b"\x1b[2J");
+    assert_eq!(t.selection(), None);
+}
+
+#[test]
+fn wide_characters_are_selected_whole() {
+    let mut t = term(2, 10);
+    t.feed("a漢b".as_bytes());
+    // Select only the spacer half of 漢.
+    t.set_selection(vp(0, 2), vp(0, 3), false);
+    let s = t.snapshot();
+    assert_eq!(selected_cols(&s, 0), vec![1, 2, 3]);
+    assert_eq!(t.selection_text().as_deref(), Some("漢b"));
+}
+
+#[test]
+fn selection_is_encoded_with_viewport_rows() {
+    let mut t = term(2, 4);
+    t.feed(b"ab\r\ncd\r\nef");
+    // "ab" is in history now.
+    t.set_selection(vp(-1, 0), vp(0, 1), false);
+    let s = t.snapshot();
+    let mut out = vec![0i32; s.encoded_len()];
+    s.encode_ints(&mut out).unwrap();
+    let tail = &out[8 + 2 * 4 * 4..];
+    assert_eq!(tail[0], 0, "no combining");
+    assert_eq!(&tail[1..6], &[1, -1, 0, 0, 1]);
+    assert_eq!(tail[6], 0, "no links");
+}
+
+// ---------------------------------------------------------------- hyperlinks
+
+#[test]
+fn osc8_hyperlinks_are_reported_as_spans() {
+    let mut t = term(3, 12);
+    t.feed(b"see \x1b]8;id=x;https://ferrux.dev/a\x1b\\ferrux\x1b]8;;\x1b\\ now");
+    // A link that wraps onto the next row stays one span.
+    t.feed(b"\r\n\x1b[2;9H\x1b]8;;http://b.example\x07linkwrap\x1b]8;;\x07");
+    let s = t.snapshot();
+    assert_eq!(
+        s.links,
+        vec![
+            Link {
+                start: 4,
+                end: 10,
+                uri: "https://ferrux.dev/a".into()
+            },
+            Link {
+                start: 12 + 8,
+                end: 12 + 8 + 8,
+                uri: "http://b.example".into()
+            },
+        ]
+    );
+    assert!(s.cell(0, 4).flags.contains(CellFlags::HYPERLINK));
+    assert!(!s.cell(0, 3).flags.contains(CellFlags::HYPERLINK));
+    assert!(!s.cell(0, 10).flags.contains(CellFlags::HYPERLINK));
+    assert_eq!(s.link_at(0, 9).unwrap().uri, "https://ferrux.dev/a");
+    assert_eq!(s.link_at(2, 3).unwrap().uri, "http://b.example");
+    assert_eq!(s.link_at(0, 2), None);
+
+    let mut out = vec![0i32; s.encoded_len()];
+    s.encode_ints(&mut out).unwrap();
+    let tail = &out[8 + 3 * 12 * 4 + 1 + 5..];
+    assert_eq!(tail[0], 2);
+    assert_eq!(&tail[1..4], &[4, 10, 20]);
+    let uri: String = tail[4..24]
+        .iter()
+        .map(|&c| char::from_u32(c as u32).unwrap())
+        .collect();
+    assert_eq!(uri, "https://ferrux.dev/a");
+    assert_eq!(&tail[24..27], &[20, 28, 16]);
+    assert_eq!(out.len(), 8 + 3 * 12 * 4 + 1 + 5 + 1 + 3 + 20 + 3 + 16);
+}
+
+#[test]
+fn adjacent_different_links_are_separate_spans() {
+    let mut t = term(2, 10);
+    t.feed(b"\x1b]8;;a:1\x07ab\x1b]8;;a:2\x07cd\x1b]8;;\x07");
+    let s = t.snapshot();
+    assert_eq!(s.links.len(), 2);
+    assert_eq!((s.links[0].start, s.links[0].end), (0, 2));
+    assert_eq!((s.links[1].start, s.links[1].end), (2, 4));
 }

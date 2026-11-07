@@ -11,6 +11,7 @@
             xmlns:tools="http://schemas.android.com/tools">
             <intent-filter>
                 <action android:name="dev.ferrux.debug.DUMP_SCREEN" />
+                <action android:name="dev.ferrux.debug.SHOW_IME" />
             </intent-filter>
         </receiver>
     </application>

@@ -248,6 +248,93 @@ pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_screenText<'caller>
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_startSelection<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    kind: jint,
+    row: jint,
+    col: jint,
+) -> jboolean {
+    env.with_env(|_| -> JResult<jboolean> { Ok(core::start_selection(id, kind, row, col)) })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_updateSelection<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    row: jint,
+    col: jint,
+) {
+    env.with_env(|_| -> JResult<()> {
+        core::update_selection(id, row, col);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_setSelection<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+    start_row: jint,
+    start_col: jint,
+    end_row: jint,
+    end_col: jint,
+    block: jboolean,
+) {
+    env.with_env(|_| -> JResult<()> {
+        core::set_selection(id, (start_row, start_col), (end_row, end_col), block);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_selectAll<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+) {
+    env.with_env(|_| -> JResult<()> {
+        core::select_all(id);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_clearSelection<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+) {
+    env.with_env(|_| -> JResult<()> {
+        core::clear_selection(id);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_selectionText<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+) -> JString<'caller> {
+    env.with_env(|env| match core::selection_text(id) {
+        Some(text) => JString::from_str(env, text),
+        // null: nothing selected or no such session.
+        None => Ok(JString::default()),
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_awaitChange<'caller>(
     mut env: EnvUnowned<'caller>,
     _class: JClass<'caller>,
