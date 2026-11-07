@@ -516,7 +516,7 @@ tap_text Allow
 expect_ui clipboard '^OSC52-OK$' "Allow copied the program's text"
 
 log "18: URLs are detected; tapping a link offers Open link / Copy link"
-type_line 'clear'
+run_line 'clear'
 type_line 'echo%svisit%shttps://ferrux.dev/tap%snow'
 expect_screen '^visit https://ferrux.dev/tap now$' "URL line"
 hide_ime
