@@ -433,7 +433,7 @@ adb shell input keyevent KEYCODE_BACK
 expect_ui selecting '^0$' "Back ended selection mode"
 
 log "12: scrollback: drag, fling, scrollbar and the jump button"
-type_line 'clear'
+run_line 'clear'
 type_line 'seq%s1%s400'
 expect_screen '^400$' "400 lines printed"
 hide_ime
