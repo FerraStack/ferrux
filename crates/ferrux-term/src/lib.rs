@@ -385,6 +385,7 @@ impl Terminal {
             (Flags::HIDDEN, CellFlags::HIDDEN),
             (Flags::DOUBLE_UNDERLINE, CellFlags::DOUBLE_UNDERLINE),
             (Flags::UNDERCURL, CellFlags::UNDERCURL),
+            (Flags::WRAPLINE, CellFlags::WRAPPED),
         ] {
             if f.contains(engine) {
                 flags.insert(ours);

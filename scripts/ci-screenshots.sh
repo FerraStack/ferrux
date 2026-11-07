@@ -127,7 +127,7 @@ adb shell am start -W -n "$ACTIVITY"
 
 log "01: fresh launch lands in a shell"
 expect_screen '^sessions=1 ' "one session auto-created"
-expect_screen 'files/home \$' "shell prompt visible"
+expect_screen '^~ \$' "shell prompt visible"
 shot 01-launch
 
 log "02: echo"
@@ -167,7 +167,7 @@ tap_node 'content-desc="Sessions"'
 wait_node 'text="New session"' > /dev/null
 tap_node 'text="New session"'
 expect_screen '^sessions=2 ' "second session created"
-expect_screen 'files/home \$' "second session prompt"
+expect_screen '^~ \$' "second session prompt"
 tap_node 'content-desc="Sessions"'
 wait_node 'text="Session 1"' > /dev/null
 wait_node 'text="Session 2"' > /dev/null

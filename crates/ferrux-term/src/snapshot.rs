@@ -29,6 +29,9 @@ impl CellFlags {
     /// Zero-width characters (combining marks, ZWJ, variation selectors)
     /// follow the base character; see [`Snapshot::combining`].
     pub const COMBINING: Self = Self(1 << 10);
+    /// Set on the last cell of a row whose text continues on the next row
+    /// (soft wrap), so copy/accessibility can rejoin long lines.
+    pub const WRAPPED: Self = Self(1 << 11);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -184,12 +187,36 @@ impl Snapshot {
     }
 
     /// All rows joined by `\n`, with trailing blank rows removed.
+    /// Whether `row` soft-wraps into the next row.
+    pub fn row_wraps(&self, row: usize) -> bool {
+        self.cols > 0
+            && self
+                .cell(row, self.cols - 1)
+                .flags
+                .contains(CellFlags::WRAPPED)
+    }
+
+    /// The visible text: rows joined by `\n`, except that soft-wrapped rows
+    /// are joined directly; trailing blank lines removed.
     pub fn text(&self) -> String {
-        let mut lines: Vec<String> = (0..self.rows).map(|r| self.row_text(r)).collect();
-        while lines.last().is_some_and(String::is_empty) {
-            lines.pop();
+        let mut out = String::new();
+        for row in 0..self.rows {
+            if self.row_wraps(row) {
+                // Keep trailing spaces: they are part of the wrapped line.
+                for (col, cell) in self.row(row).iter().enumerate() {
+                    if !cell.flags.contains(CellFlags::WIDE_SPACER) {
+                        out.push(cell.ch);
+                        out.extend(self.combining_at(row, col));
+                    }
+                }
+            } else {
+                out.push_str(&self.row_text(row));
+                out.push('\n');
+            }
         }
-        lines.join("\n")
+        let trimmed = out.trim_end_matches(['\n', ' ']).len();
+        out.truncate(trimmed);
+        out
     }
 
     /// Number of `i32`s [`Snapshot::encode_ints`] writes.

@@ -138,6 +138,13 @@ fn resize_reflows_and_clamps() {
     t.feed(b"0123456789abc");
     assert_eq!(t.snapshot().row_text(0), "0123456789");
     assert_eq!(t.snapshot().row_text(1), "abc");
+    assert!(t.snapshot().row_wraps(0));
+    assert!(!t.snapshot().row_wraps(1));
+    assert_eq!(
+        t.snapshot().text(),
+        "0123456789abc",
+        "soft wrap is rejoined"
+    );
     t.resize(TermSize::new(3, 20));
     let s = t.snapshot();
     assert_eq!((s.rows, s.cols), (3, 20));

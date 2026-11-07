@@ -107,6 +107,16 @@ impl Layout {
         self.files_dir.join("tmp")
     }
 
+    /// Ferrux-managed files outside the prefix (regenerated on start).
+    pub fn ferrux_dir(&self) -> PathBuf {
+        self.files_dir.join("ferrux")
+    }
+
+    /// Startup file for interactive system-shell sessions (`$ENV`).
+    pub fn shell_rc(&self) -> PathBuf {
+        self.ferrux_dir().join("shrc")
+    }
+
     /// Whether this layout matches the prefix packages are compiled for.
     pub fn matches_compiled_prefix(&self) -> bool {
         self.prefix() == Path::new(PREFIX)
@@ -198,6 +208,11 @@ where
     set("FERRUX_VERSION", env!("CARGO_PKG_VERSION").into());
     set("FERRUX_PREFIX", prefix);
     set("FERRUX_APP_PACKAGE", APP_PACKAGE.into());
+    if !bootstrapped {
+        // Android's mksh would read /system/etc/mkshrc, whose prompt is the
+        // full path and scrolls the line editor on phone-width terminals.
+        set("ENV", path_str(layout.shell_rc()));
+    }
     if let Some(lib) = layout.exec_preload_lib() {
         set("LD_PRELOAD", path_str(lib));
     }
@@ -258,6 +273,7 @@ mod tests {
         assert_eq!(get("BOOTCLASSPATH"), Some("/a.jar"));
         assert_eq!(get("SECRET"), None);
         assert_eq!(get("LD_PRELOAD"), None);
+        assert_eq!(get("ENV"), Some("/x/files/ferrux/shrc"));
         let mut keys: Vec<_> = env.iter().map(|(k, _)| k).collect();
         let n = keys.len();
         keys.dedup();

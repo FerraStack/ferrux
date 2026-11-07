@@ -78,6 +78,9 @@ object SnapshotLayout {
     /** Zero-width characters follow the base character; see the combining table. */
     const val F_COMBINING = 1 shl 10
 
+    /** Last cell of a soft-wrapped row (the line continues on the next row). */
+    const val F_WRAPPED = 1 shl 11
+
     /**
      * Minimum size for a [rows]×[cols] snapshot. After the cells comes the
      * combining table: `count`, then `count` × (`cellIndex, n, codepoint × n`).
