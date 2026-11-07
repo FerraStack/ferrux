@@ -199,13 +199,23 @@ tap_node 'text="Session 2"'
 sleep 1
 
 log "06: CTRL toggle"
+# Compose exposes `selected` on non-tab roles as checkable/checked.
+is_on() { node "$1" | grep -Eq '(checked|selected)="true"'; }
 tap_node 'content-desc="CTRL"'
-node 'content-desc="CTRL"' | grep -q 'selected="true"' || fail "CTRL not shown as active"
+for i in $(seq 1 10); do is_on 'content-desc="CTRL"' && break; sleep 0.5; done
+if ! is_on 'content-desc="CTRL"'; then
+  ui_dump > "$OUT/ui-ctrl.xml"
+  node 'content-desc="CTRL"'
+  fail "CTRL not shown as active (see ui-ctrl.xml)"
+fi
 log "ok: CTRL active"
 shot 06-ctrl
 adb shell input text c
 sleep 1
-node 'content-desc="CTRL"' | grep -q 'selected="false"' || fail "CTRL should reset after one key"
+if is_on 'content-desc="CTRL"'; then
+  ui_dump > "$OUT/ui-ctrl-after.xml"
+  fail "CTRL should reset after one key"
+fi
 log "ok: CTRL consumed by ^C"
 expect_screen '^sessions=2 ' "sessions still alive after ^C"
 
