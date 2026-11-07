@@ -360,21 +360,36 @@ internal class TerminalSelection(private val view: TerminalView) {
 
     /** One selection handle: the theme's text-select drawable in a tiny popup window. */
     private inner class Handle(val isStart: Boolean) : View(view.context) {
-        private val drawable: Drawable? = view.context.obtainStyledAttributes(
-            intArrayOf(if (isStart) android.R.attr.textSelectHandleLeft else android.R.attr.textSelectHandleRight),
-        ).let { a ->
-            try {
-                a.getDrawable(0)
-            } finally {
-                a.recycle()
-            }
-        }
+        // Both teardrop shapes: a handle that would leave the screen shows the other
+        // one, mirrored onto the inside of the selection, as TextView does.
+        private val leftShape: Drawable? = themeDrawable(android.R.attr.textSelectHandleLeft)
+        private val rightShape: Drawable? = themeDrawable(android.R.attr.textSelectHandleRight)
         private val density = view.resources.displayMetrics.density
-        private val w = drawable?.intrinsicWidth?.takeIf { it > 0 } ?: (FALLBACK_SIZE_DP * density).toInt()
-        private val h = drawable?.intrinsicHeight?.takeIf { it > 0 } ?: (FALLBACK_SIZE_DP * density).toInt()
+        private val w = (leftShape ?: rightShape)?.intrinsicWidth?.takeIf { it > 0 }
+            ?: (FALLBACK_SIZE_DP * density).toInt()
+        private val h = (leftShape ?: rightShape)?.intrinsicHeight?.takeIf { it > 0 }
+            ?: (FALLBACK_SIZE_DP * density).toInt()
+
+        /** Showing the other teardrop because the natural one would be cut off. */
+        private var mirrored = false
+
+        /** How far the popup was moved to keep it inside the window. */
+        private var clampShift = 0
+
+        /** Whether the teardrop points up-right (its tip at the right), like a start handle. */
+        private val pointsRight: Boolean get() = isStart != mirrored
 
         /** The pixel of the drawable that touches the text, as in TextView. */
-        private val hotspotX = if (isStart) w * 3 / 4 else w / 4
+        private val hotspotX: Int get() = if (pointsRight) w * 3 / 4 else w / 4
+
+        private fun themeDrawable(attr: Int): Drawable? =
+            view.context.obtainStyledAttributes(intArrayOf(attr)).let { a ->
+                try {
+                    a.getDrawable(0)
+                } finally {
+                    a.recycle()
+                }
+            }
         private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = FALLBACK_COLOR }
 
         private val popup = PopupWindow(this, w, h, false).apply {
@@ -405,7 +420,18 @@ internal class TerminalSelection(private val view: TerminalView) {
             }
             localX = view.paddingLeft + (if (isStart) col else col + 1) * view.cellWidthPx
             localY = view.paddingTop + (row + 1) * view.cellHeightPx
-            val x = windowLocation[0] + localX.roundToInt() - hotspotX
+            // Flip at the screen edges so the whole handle stays visible and grabbable.
+            val hotspot = windowLocation[0] + localX.roundToInt()
+            val windowWidth = view.rootView.width
+            val flip = if (isStart) hotspot - w * 3 / 4 < 0 else hotspot + w * 3 / 4 > windowWidth
+            if (flip != mirrored) {
+                mirrored = flip
+                invalidate()
+            }
+            // Flipping leaves a quarter of the handle outside right at the edge: clamp too.
+            val natural = hotspot - hotspotX
+            val x = natural.coerceIn(0, maxOf(0, windowWidth - w))
+            clampShift = x - natural
             val y = windowLocation[1] + localY.roundToInt()
             if (popup.isShowing) {
                 if (x != windowX || y != windowY) popup.update(x, y, -1, -1)
@@ -420,18 +446,18 @@ internal class TerminalSelection(private val view: TerminalView) {
             if (popup.isShowing) popup.dismiss()
         }
 
-        /** `left,top,right,bottom` on screen. */
+        /** `left,top,right,bottom` on screen, plus `:mirrored` when flipped at an edge. */
         fun screenBounds(): String {
             if (!popup.isShowing) return ""
-            val left = screenLocation[0] + localX.roundToInt() - hotspotX
+            val left = screenLocation[0] + localX.roundToInt() - hotspotX + clampShift
             val top = screenLocation[1] + localY.roundToInt()
-            return "$left,$top,${left + w},${top + h}"
+            return "$left,$top,${left + w},${top + h}" + if (mirrored) ":mirrored" else ""
         }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) = setMeasuredDimension(w, h)
 
         override fun onDraw(canvas: Canvas) {
-            val d = drawable
+            val d = if (pointsRight) leftShape else rightShape
             if (d != null) {
                 d.setBounds(0, 0, w, h)
                 d.draw(canvas)
@@ -439,7 +465,7 @@ internal class TerminalSelection(private val view: TerminalView) {
                 // A teardrop-ish fallback: a circle with the corner at the hotspot squared off.
                 val r = w / 2f
                 canvas.drawCircle(r, h - r, r, fallbackPaint)
-                if (isStart) canvas.drawRect(r, 0f, w.toFloat(), r, fallbackPaint)
+                if (pointsRight) canvas.drawRect(r, 0f, w.toFloat(), r, fallbackPaint)
                 else canvas.drawRect(0f, 0f, r, r, fallbackPaint)
             }
         }
