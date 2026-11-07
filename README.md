@@ -77,6 +77,10 @@ Scrolling:
   encoding), a swipe sends wheel events and a tap is a left click.
 - Mouse wheels and trackpads scroll 3 lines per notch.
 
+Pinch to zoom. On a hardware keyboard, Ctrl+Alt+= and Ctrl+Alt+- also zoom. Ferrux saves the font
+size in sp, so it follows the system font scale. The terminal keeps its state while you
+switch apps.
+
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
 [`android/terminal-view/licenses/JetBrainsMono-OFL.txt`](android/terminal-view/licenses/JetBrainsMono-OFL.txt).

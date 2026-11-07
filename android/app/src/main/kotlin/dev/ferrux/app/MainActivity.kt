@@ -68,16 +68,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (FerruxNative.loadError == null) {
-            bindService(FerruxService.bindIntent(this), connection, Context.BIND_AUTO_CREATE)
+        // Bound from the first start until the Activity is destroyed, not just while
+        // visible: unbinding in onStop tore down the terminal view, and with it the
+        // font size and IME state, every time the user switched apps.
+        if (FerruxNative.loadError == null && !bound) {
+            bound = bindService(FerruxService.bindIntent(this), connection, Context.BIND_AUTO_CREATE)
         }
     }
 
-    override fun onStop() {
-        if (FerruxNative.loadError == null) unbindService(connection)
+    override fun onDestroy() {
+        if (bound) unbindService(connection)
+        bound = false
         service = null
-        super.onStop()
+        super.onDestroy()
     }
+
+    private var bound = false
 
     private fun newSession() {
         val svc = service ?: return

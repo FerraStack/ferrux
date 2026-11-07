@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ferrux.app.FerruxService
+import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
 import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
@@ -86,6 +88,8 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val sticky = remember { StickyModifierState() }
+    val context = LocalContext.current
+    val settings = remember(context) { FerruxSettings.get(context) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
 
     // Closing the last session closes the app, like a terminal window.
@@ -145,11 +149,15 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 if (current != null) {
                     AndroidView(
                         factory = { context ->
-                            TerminalView(context).also {
-                                it.stickyModifiers = sticky
-                                it.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
-                                terminalView = it
-                                ActiveTerminal.view = java.lang.ref.WeakReference(it)
+                            TerminalView(context).also { view ->
+                                view.stickyModifiers = sticky
+                                view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
+                                // The saved pinch-zoom size, applied before the first layout so the
+                                // pty is sized once.
+                                settings.fontSizeSp.value?.let { view.textSizeSp = it }
+                                view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
+                                terminalView = view
+                                ActiveTerminal.view = java.lang.ref.WeakReference(view)
                             }
                         },
                         update = { view ->

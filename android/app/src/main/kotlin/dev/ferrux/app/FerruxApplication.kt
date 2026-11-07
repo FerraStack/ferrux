@@ -8,6 +8,8 @@ import dev.ferrux.terminal.FerruxNative
 class FerruxApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Load preferences once, before any UI, so the first frame uses them.
+        FerruxSettings.get(this)
         val loadError = FerruxNative.loadError
         if (loadError != null) {
             Log.e(TAG, "libferrux.so not available", loadError)

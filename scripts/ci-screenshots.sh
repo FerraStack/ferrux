@@ -482,5 +482,34 @@ shot 13-mouse
 adb shell input text q
 expect_screen '^ALTSCREEN done$' "probe exited"
 
+log "15: the zoom level survives leaving the app and a restart"
+type_line 'echo%sKEEPVIEW'
+expect_screen '^KEEPVIEW$' "marker line"
+hide_ime
+view1="$(ui_field viewId)"
+sp1="$(ui_field textSizeSp)"
+cols1="$(ui_field cols)"
+adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT KEYCODE_EQUALS
+adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT KEYCODE_EQUALS
+sleep 1
+sp2="$(ui_field textSizeSp)"
+cols2="$(ui_field cols)"
+awk -v a="$sp1" -v b="$sp2" 'BEGIN { exit !(b > a * 1.15) }' || fail "Ctrl+Alt+= did not zoom in ($sp1 -> $sp2 sp)"
+[ "$cols2" -lt "$cols1" ] || fail "zooming in did not reduce the columns ($cols1 -> $cols2)"
+log "ok: Ctrl+Alt+= twice: $sp1 -> $sp2 sp, $cols1 -> $cols2 columns"
+expect_screen "^sessions=2 .* cols=$cols2 " "the pty was resized to the new grid"
+shot 14-zoomed
+adb shell input keyevent KEYCODE_HOME
+sleep 2
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_ui viewId "^$view1\$" "the same TerminalView after onStop/onStart"
+expect_ui textSizeSp "^$sp2\$" "zoom kept after switching apps"
+expect_screen '^KEEPVIEW$' "screen content kept"
+adb shell am force-stop "$PKG"
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_screen '^sessions=1 ' "a fresh process starts a new session"
+expect_screen "^sessions=1 .* cols=$cols2 " "the new session uses the saved grid size"
+expect_ui textSizeSp "^$sp2\$" "zoom persisted across a restart"
+
 check_crash
 log "all checks passed"

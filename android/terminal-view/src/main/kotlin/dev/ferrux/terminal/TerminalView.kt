@@ -100,7 +100,10 @@ class TerminalView @JvmOverloads constructor(
             restartBlink()
         }
 
-    /** Called after pinch-zoom changes the font size (in pixels), e.g. to persist it. */
+    /**
+     * Called after the user changed the font size (pinch zoom, Ctrl+Alt+= / -), with
+     * the new size in pixels, e.g. to persist it.
+     */
     var onTextSizeChanged: ((Float) -> Unit)? = null
 
     /** Font size in pixels. */
@@ -115,6 +118,20 @@ class TerminalView @JvmOverloads constructor(
             updateGridSize()
             invalidate()
         }
+
+    /** Font size in sp, i.e. following the system font scale. Persist this rather than px. */
+    var textSizeSp: Float
+        get() = textSizePx / sp(1f)
+        set(value) {
+            textSizePx = sp(value)
+        }
+
+    /** Scales the font as a user action, so [onTextSizeChanged] fires. */
+    private fun zoomBy(factor: Float) {
+        val before = textSizePx
+        textSizePx *= factor
+        if (textSizePx != before) onTextSizeChanged?.invoke(textSizePx)
+    }
 
     /** Terminal grid size derived from the view size and font metrics. */
     var rows: Int = 0
@@ -260,6 +277,8 @@ class TerminalView @JvmOverloads constructor(
 
         override fun onScaleEnd(detector: ScaleGestureDetector) {
             scaling = false
+            // A pinch must not end as a tap, double tap or long press.
+            tapCounter.reset()
             onTextSizeChanged?.invoke(textSizePx)
         }
     })
@@ -824,6 +843,8 @@ class TerminalView @JvmOverloads constructor(
             "cell" to "$cellWidth,$cellHeight",
             "rows" to frameRows.toString(),
             "cols" to frameCols.toString(),
+            "viewId" to System.identityHashCode(this).toString(),
+            "textSizeSp" to "%.2f".format(java.util.Locale.ROOT, textSizeSp),
             "offset" to frameDisplayOffset.toString(),
             "history" to frameHistory.toString(),
             "modes" to frameModes.toString(),
@@ -1006,6 +1027,18 @@ class TerminalView @JvmOverloads constructor(
             copySelection()
             return true
         }
+        // Ctrl+Alt+= / + / - zoom, as in Termux; plain Ctrl+- stays ^_ for readline.
+        if (event.isCtrlPressed && event.isAltPressed) {
+            val factor = when (keyCode) {
+                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> ZOOM_STEP
+                KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 1f / ZOOM_STEP
+                else -> 0f
+            }
+            if (factor != 0f) {
+                zoomBy(factor)
+                return true
+            }
+        }
         val meta = event.metaState
         val special = specialKey(keyCode)
         if (special != 0) {
@@ -1072,6 +1105,9 @@ class TerminalView @JvmOverloads constructor(
         private const val MIN_TEXT_SIZE_SP = 6f
         private const val MAX_TEXT_SIZE_SP = 40f
         private const val LINK_UNDERLINE_ALPHA = 0x99
+
+        /** Font size change per Ctrl+Alt+= / - press. */
+        private const val ZOOM_STEP = 1.1f
 
         /** Lines per notch of a mouse wheel. */
         private const val WHEEL_LINES = 3f
