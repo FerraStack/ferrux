@@ -222,7 +222,9 @@ internal class TerminalSelection(private val view: TerminalView) {
         val r0 = current[1].coerceIn(0, maxOf(0, rows - 1))
         val r1 = current[3].coerceIn(0, maxOf(0, rows - 1))
         val top = padTop + (r0 * view.cellHeightPx).toInt()
-        val bottom = padTop + ((r1 + 1) * view.cellHeightPx).toInt()
+        // The handles hang below the last row: keep the toolbar off them, as TextView does.
+        val handles = if (current[3] in 0 until rows) handleHeight else 0
+        val bottom = padTop + ((r1 + 1) * view.cellHeightPx).toInt() + handles
         if (current[1] == current[3] && current[1] in 0 until rows) {
             out.set(
                 padLeft + (current[2] * view.cellWidthPx).toInt(),
@@ -281,6 +283,9 @@ internal class TerminalSelection(private val view: TerminalView) {
         if (startHandleLazy.isInitialized()) startHandle.hide()
         if (endHandleLazy.isInitialized()) endHandle.hide()
     }
+
+    private val handleHeight: Int
+        get() = if (endHandleLazy.isInitialized()) endHandle.heightPx else 0
 
     private fun shownHandles(): List<Handle> =
         listOf(startHandleLazy, endHandleLazy).filter { it.isInitialized() && it.value.isShowing }.map { it.value }
@@ -391,6 +396,7 @@ internal class TerminalSelection(private val view: TerminalView) {
         }
 
         val isShowing: Boolean get() = popup.isShowing
+        val heightPx: Int get() = h
 
         fun place(row: Int, col: Int) {
             if (row !in 0 until view.frameRows || !view.isShown) {
