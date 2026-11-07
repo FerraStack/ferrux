@@ -11,4 +11,9 @@
     <string name="notification_channel">Terminal sessions</string>
     <string name="notification_text">%1$d session(s) running</string>
     <string name="notification_exit">Exit</string>
+    <plurals name="clipboard_request">
+        <item quantity="one">%1$s wants to copy %2$d character to the clipboard</item>
+        <item quantity="other">%1$s wants to copy %2$d characters to the clipboard</item>
+    </plurals>
+    <string name="clipboard_allow">Allow</string>
 </resources>

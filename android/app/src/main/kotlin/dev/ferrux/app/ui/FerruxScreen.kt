@@ -4,11 +4,13 @@ package dev.ferrux.app.ui
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarData
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -55,6 +63,7 @@ import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -108,6 +117,23 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
             if (id == manager.current.value) {
                 terminalView?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             }
+        }
+    }
+    // OSC 52: ask before a program replaces the clipboard.
+    val snackbars = remember { SnackbarHostState() }
+    val resources = LocalContext.current.resources
+    LaunchedEffect(manager) {
+        manager.clipboardRequest.collectLatest { request ->
+            if (request == null) return@collectLatest
+            val result = snackbars.showSnackbar(
+                message = resources.getQuantityString(
+                    R.plurals.clipboard_request, request.length, request.sessionTitle, request.length,
+                ),
+                actionLabel = resources.getString(R.string.clipboard_allow),
+                withDismissAction = true,
+                duration = SnackbarDuration.Long,
+            )
+            manager.answerClipboard(request, allow = result == SnackbarResult.ActionPerformed)
         }
     }
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
@@ -166,6 +192,10 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                     onOpen = { scope.launch { drawerState.open() } },
                     modifier = Modifier.align(Alignment.CenterStart),
                 )
+                SnackbarHost(
+                    snackbars,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 12.dp, vertical = 10.dp),
+                ) { data -> FerruxSnackbar(data) }
             }
             ExtraKeysRow(
                 layout = ExtraKeysLayout.Default,
@@ -180,6 +210,19 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
             )
         }
     }
+}
+
+/** A snackbar in the terminal's palette rather than Material's inverse colours. */
+@Composable
+private fun FerruxSnackbar(data: SnackbarData) {
+    Snackbar(
+        data,
+        shape = RoundedCornerShape(12.dp),
+        containerColor = TerminalColors.ExtraKeysBackground,
+        contentColor = TerminalColors.Foreground,
+        actionColor = TerminalColors.Accent,
+        dismissActionContentColor = TerminalColors.KeyLabel,
+    )
 }
 
 /** A thin strip on the left edge: swiping right from it opens the session drawer. */

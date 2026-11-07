@@ -77,6 +77,11 @@ Scrolling:
   encoding), a swipe sends wheel events and a tap is a left click.
 - Mouse wheels and trackpads scroll 3 lines per notch.
 
+A program can write the clipboard with OSC 52 (`printf "\e]52;c;<base64>\a"`), as tmux, vim and
+ssh sessions do. Any program can, even `cat` of an untrusted file, so Ferrux asks
+first: "Session 1 wants to copy 8 characters to the clipboard". Writes over 1 MiB are
+ignored.
+
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
 [`android/terminal-view/licenses/JetBrainsMono-OFL.txt`](android/terminal-view/licenses/JetBrainsMono-OFL.txt).

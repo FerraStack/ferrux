@@ -116,6 +116,26 @@ fn osc52_copy_event() {
 }
 
 #[test]
+fn oversized_osc52_writes_are_dropped() {
+    let mut t = term(2, 10);
+    // "AAAA" decodes to three NUL bytes: one group more than the limit allows.
+    let groups = MAX_CLIPBOARD_BYTES / 3 + 1;
+    let mut seq = b"\x1b]52;c;".to_vec();
+    seq.extend(std::iter::repeat_n(b'A', groups * 4));
+    seq.push(0x07);
+    t.feed(&seq);
+    assert!(t.drain_events().is_empty());
+    // Exactly at the limit still works.
+    let mut seq = b"\x1b]52;c;".to_vec();
+    seq.extend(std::iter::repeat_n(b'A', (MAX_CLIPBOARD_BYTES / 3) * 4));
+    seq.push(0x07);
+    t.feed(&seq);
+    assert!(
+        matches!(&t.drain_events()[..], [TermEvent::ClipboardStore(s)] if s.len() <= MAX_CLIPBOARD_BYTES)
+    );
+}
+
+#[test]
 fn device_status_report_produces_response() {
     let mut t = term(5, 10);
     t.feed(b"ab\x1b[6n");

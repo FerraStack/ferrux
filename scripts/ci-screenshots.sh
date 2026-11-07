@@ -482,7 +482,7 @@ type_line 'sh%smouse.sh%salt'
 expect_screen '^ALTSCREEN alt' "full-screen probe started"
 hide_ime
 drag_rows 3 1000
-expect_screen '1b 5b 41 1b 5b 41 ' "the program received Up arrows"
+expect_screen '1b 5b 41 1b 5b 41' "the program received Up arrows"
 expect_ui offset '^0$' "the view itself did not scroll"
 expect_ui scrollbar '^0$' "no scrollbar on the alternate screen"
 shot 12-altscreen-scroll
@@ -501,6 +501,19 @@ hide_ime
 shot 13-mouse
 adb shell input text q
 expect_screen '^ALTSCREEN done$' "probe exited"
+
+log "15: an OSC 52 clipboard write needs the user's permission"
+adb shell "run-as $PKG sh -c 'cat > files/home/osc52.sh'" < "$HERE/ci-osc52.sh"
+clip_before="$(ui_field clipboard)"
+type_line 'sh%sosc52.sh'
+expect_screen '^osc52 sent$' "the program sent OSC 52"
+hide_ime
+wait_node 'wants to copy 8 characters to the clipboard' > /dev/null
+log "ok: permission snackbar shown"
+expect_ui clipboard "^$clip_before\$" "the clipboard is untouched until allowed"
+shot 14-osc52-ask
+tap_text Allow
+expect_ui clipboard '^OSC52-OK$' "Allow copied the program's text"
 
 check_crash
 log "all checks passed"
