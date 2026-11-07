@@ -80,7 +80,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
       - name: assembleDebug + unit tests
         working-directory: android
-        run: ./gradlew --max-workers=4 assembleDebug testDebugUnitTest :terminal-view:publishToMavenLocal -Pferrux.skipCargo=true
+        run: ./gradlew --max-workers=4 assembleDebug testDebugUnitTest :terminal-view:publishToMavenLocal :api:publishToMavenLocal -Pferrux.skipCargo=true
       - name: Check APK contents
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
@@ -96,6 +96,21 @@ jobs:
           ls -l $aar
           unzip -l $aar | grep -E 'jni/arm64-v8a/libferruxterm.so'
           unzip -l $aar | grep -E 'jni/x86_64/libferruxterm.so'
+          unzip -l $aar | grep -E 'classes.jar'
+      - name: Check the API service and permission (docs/API.md)
+        run: |
+          aapt2="$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt2"
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          "$aapt2" dump xmltree --file AndroidManifest.xml "$apk" > manifest.txt
+          grep -A8 'E: permission' manifest.txt | grep -q 'dev.ferrux.permission.API'
+          # protectionLevel signature (0x2) | knownSigner (0x8000000)
+          grep -A8 'E: permission' manifest.txt | grep protectionLevel | tee /dev/stderr | grep -q '0x8000002'
+          grep -A12 'FerruxApiService' manifest.txt | grep -q 'dev.ferrux.api.action.BIND'
+          echo "API service and permission declared"
+      - name: Check ferrux-client AAR contents
+        run: |
+          aar=$(ls ~/.m2/repository/dev/ferrux/ferrux-client/*/ferrux-client-*.aar)
+          ls -l $aar
           unzip -l $aar | grep -E 'classes.jar'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

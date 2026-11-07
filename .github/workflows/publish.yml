@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0
+# Publishes the reusable libraries to GitHub Packages (Maven), group dev.ferrux:
+#   dev.ferrux:terminal-view   terminal widget + libferruxterm.so (docs/REUSE.md)
+#   dev.ferrux:ferrux-client   Ferrux API AIDL + Kotlin client (docs/API.md §9)
+# On pushes to main: `ferrux.publishVersion` from android/gradle.properties (a -SNAPSHOT).
+# On tags v<version>: <version>, which must not be a SNAPSHOT.
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: "30.0.16248370"
+
+# Third-party actions are pinned by commit SHA (tag in the comment).
+jobs:
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: >-
+            platform-tools
+            platforms;android-37.0
+            build-tools;36.0.0
+            ndk;${{ env.NDK_VERSION }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: android
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-ndk
+      - name: Build the native libraries
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          scripts/build-native.sh
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            case "$version" in *SNAPSHOT*) echo "::error::tag versions must not be snapshots"; exit 1 ;; esac
+            echo "args=-Pferrux.publishVersion=$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+      - name: Publish
+        working-directory: android
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          ./gradlew --max-workers=4 :terminal-view:publish :api:publish
+          -Pferrux.skipCargo=true ${{ steps.version.outputs.args }}

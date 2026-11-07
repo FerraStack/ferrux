@@ -133,6 +133,24 @@ The application id is **`dev.ferrux`**, so the prefix is
 - `crates/ferrux-env/src/lib.rs`: the `app_package!()` macro and `APP_PACKAGE`
 - `android/gradle.properties`: `ferrux.applicationId`
 
+### Ferrux API (for Ferride and other FerraStack apps)
+
+Other FerraStack apps run programs and edit files inside Ferrux through
+`FerruxApiService`, an exported AIDL service guarded by
+`dev.ferrux.permission.API` (`signature|knownSigner`). The design and the full
+contract are in [docs/API.md](docs/API.md).
+
+- `crates/ferrux-host`: spawning with pipes or a PTY, process ownership and
+  cleanup, and file operations confined to `$HOME`. It is platform-neutral and
+  tested on Linux.
+- `android/api`: the AIDL interface plus `ferrux-client`, a Kotlin library
+  with coroutine wrappers. It is published to GitHub Packages as
+  `dev.ferrux:ferrux-client`, next to `dev.ferrux:terminal-view`; see
+  [docs/REUSE.md](docs/REUSE.md#publishing).
+- The trusted signing-certificate digests are in
+  [`android/api-signers.properties`](android/api-signers.properties), plus
+  `-Pferrux.api.knownSigners=…` for local builds and CI.
+
 ## Building
 
 ### Rust core (Linux or macOS)

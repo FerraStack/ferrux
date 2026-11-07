@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Merged into client apps: the permission that guards Ferrux's API service and
+     package visibility for the official Ferrux package (docs/API.md §2). Clients that
+     talk to a Ferrux build with another applicationId add their own entries. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="dev.ferrux.permission.API" />
+    <queries>
+        <package android:name="dev.ferrux" />
+    </queries>
+</manifest>

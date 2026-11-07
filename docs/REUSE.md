@@ -125,20 +125,62 @@ registers the terminal table and the app table.
 
 ## Publishing
 
-`terminal-view` is published as **`dev.ferrux:terminal-view`**, one AAR that
-contains the classes, the sources jar and `jni/<abi>/libferruxterm.so` for
-`arm64-v8a` and `x86_64`. It uses the same group and mechanism as the API
-lane's `dev.ferrux:ferrux-client` (`maven-publish`, with a JitPack build of
-the same task):
+Two AARs are published to **GitHub Packages** (Maven,
+`https://maven.pkg.github.com/FerraStack/ferrux`), group `dev.ferrux`:
 
-```sh
-cd android && ./gradlew :terminal-view:publishToMavenLocal -Pferrux.publishVersion=<version>
+| Artifact | Contents |
+|---|---|
+| `dev.ferrux:terminal-view` | the widget's classes, the sources jar, and `jni/<abi>/libferruxterm.so` for `arm64-v8a` and `x86_64` |
+| `dev.ferrux:ferrux-client` | the Ferrux API AIDL stubs and the Kotlin client ([API.md](API.md) §9) |
+
+- **Workflow:** [`.github/workflows/publish.yml`](../.github/workflows/publish.yml)
+  builds both `.so` files with cargo-ndk (`scripts/build-native.sh`), then runs
+  `:terminal-view:publish :api:publish`.
+- **Version:** one Gradle property, `ferrux.publishVersion` in
+  `android/gradle.properties` (e.g. `0.1.0-SNAPSHOT`).
+  - A push to `main` publishes that snapshot.
+  - A tag `v0.1.0` publishes `0.1.0`.
+- **CI:** every PR runs `publishToMavenLocal` for both and checks the AARs'
+  contents.
+- **Maven Central:** can come later. It needs a founder-owned Sonatype account
+  and a signing key.
+
+### Consuming the packages
+
+GitHub Packages requires authentication even for public packages.
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            name = "FerruxPackages"
+            url = uri("https://maven.pkg.github.com/FerraStack/ferrux")
+            credentials {
+                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+                password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
+}
+// build.gradle.kts
+implementation("dev.ferrux:terminal-view:0.1.0-SNAPSHOT")
+implementation("dev.ferrux:ferrux-client:0.1.0-SNAPSHOT")
 ```
 
-CI runs this on every PR and checks the AAR's contents. The version defaults
-to `0.0.1-SNAPSHOT`. A JitPack build needs the Rust toolchain and cargo-ndk
-for `libferruxterm.so`, or must publish with prebuilt libraries. The API lane
-decides this together with `ferrux-client`'s `jitpack.yml`.
+- **CI in another repository (e.g. Ferride):**
+  - Give the job `permissions: packages: read` and pass `GITHUB_TOKEN` to Gradle.
+  - Each package's settings on GitHub must grant that repository read access:
+    Package settings → *Manage Actions access*. Only an org admin can do this.
+- **Local development:**
+  - Create a personal access token (classic) with `read:packages`.
+  - Put `gpr.user=<github login>` and `gpr.key=<token>` in
+    `~/.gradle/gradle.properties`, never in the repository.
+- **Without credentials:** build from a Ferrux checkout. Use
+  `./gradlew :terminal-view:publishToMavenLocal :api:publishToMavenLocal` and
+  `mavenLocal()`, or an `includeBuild` of `ferrux/android`.
 
 ## Tests
 

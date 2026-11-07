@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `libferrux.so`: the Ferrux app's native library.
 //!
-//! `JNI_OnLoad` binds two sets of natives with `RegisterNatives`:
+//! `JNI_OnLoad` binds three sets of natives with `RegisterNatives`:
 //!
 //! * the terminal natives of `ferrux-jni-core` on
-//!   `dev.ferrux.terminal.TerminalNative` (shared with other apps), and
+//!   `dev.ferrux.terminal.TerminalNative` (shared with other apps),
 //! * the Ferrux app natives below on `dev.ferrux.app.FerruxAppNative`: the
-//!   Linux environment (`ferrux-env`) and spawning with it.
+//!   Linux environment (`ferrux-env`) and spawning with it, and
+//! * the Ferrux API v1 natives ([`api`]) on `dev.ferrux.app.api.ApiNative`.
 //!
 //! Every function here is a thin adapter; the logic lives in [`core`] and the
 //! crates below it. Panics and JNI errors become a Java `RuntimeException`.
 //! See `docs/REUSE.md`.
 
+pub mod api;
 pub mod core;
 
 use std::ffi::c_void;
@@ -66,7 +68,8 @@ pub unsafe extern "system" fn JNI_OnLoad(vm: *mut JavaVM, _reserved: *mut c_void
     unsafe {
         ferrux_jni_core::on_load(vm, "ferrux", |env| {
             register_terminal_natives(env, TERMINAL_CLASS)?;
-            register_natives(env, APP_CLASS, APP_NATIVES)
+            register_natives(env, APP_CLASS, APP_NATIVES)?;
+            register_natives(env, api::API_CLASS, api::API_NATIVES)
         })
     }
 }

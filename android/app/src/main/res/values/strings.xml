@@ -30,4 +30,7 @@
     <string name="notification_wake_lock_acquire">Acquire wakelock</string>
     <string name="notification_wake_lock_release">Release wakelock</string>
     <string name="notification_wake_lock_held">%1$s · wake lock held</string>
+    <string name="notification_text_api">%1$s · %2$d process(es) for other apps</string>
+    <string name="api_permission_label">run programs in Ferrux</string>
+    <string name="api_permission_description">Lets the app run programs and read or change files in Ferrux, with the same access as Ferrux itself. Only apps from the Ferrux developers can get this permission.</string>
 </resources>

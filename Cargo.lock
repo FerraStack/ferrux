@@ -150,6 +150,7 @@ name = "ferrux-android"
 version = "0.1.0"
 dependencies = [
  "ferrux-env",
+ "ferrux-host",
  "ferrux-jni-core",
  "ferrux-pty",
  "ferrux-session",
@@ -162,6 +163,18 @@ name = "ferrux-env"
 version = "0.1.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "ferrux-host"
+version = "0.1.0"
+dependencies = [
+ "ferrux-env",
+ "ferrux-pty",
+ "libc",
+ "log",
+ "rustix",
+ "thiserror",
 ]
 
 [[package]]
