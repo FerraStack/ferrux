@@ -4,7 +4,6 @@ package dev.ferrux.app.ui
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -223,7 +222,6 @@ private fun FerruxSnackbar(data: SnackbarData) {
         contentColor = TerminalColors.Foreground,
         actionColor = TerminalColors.Accent,
         dismissActionContentColor = TerminalColors.KeyLabel,
-        modifier = Modifier.border(1.dp, TerminalColors.KeyPressed, RoundedCornerShape(12.dp)),
     )
 }
 
