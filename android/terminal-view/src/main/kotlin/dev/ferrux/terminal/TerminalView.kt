@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Build
 import android.os.SystemClock
 import android.text.InputType
 import android.util.AttributeSet
@@ -100,7 +101,10 @@ class TerminalView @JvmOverloads constructor(
             restartBlink()
         }
 
-    /** Called after pinch-zoom changes the font size (in pixels), e.g. to persist it. */
+    /**
+     * Called after the user changed the font size (pinch zoom, Ctrl+Alt+= / Ctrl+Alt+-)
+     * with the new size in pixels, e.g. to persist [textSizeSp].
+     */
     var onTextSizeChanged: ((Float) -> Unit)? = null
 
     /** Font size in pixels. */
@@ -115,6 +119,28 @@ class TerminalView @JvmOverloads constructor(
             updateGridSize()
             invalidate()
         }
+
+    /** Font size in sp, so it follows the system font scale. Persist this rather than pixels. */
+    var textSizeSp: Float
+        get() {
+            val metrics = resources.displayMetrics
+            // Android 14+ scales large sp sizes non-linearly; invert that exactly.
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                TypedValue.deriveDimension(TypedValue.COMPLEX_UNIT_SP, textSizePx, metrics)
+            } else {
+                textSizePx / (metrics.density * resources.configuration.fontScale)
+            }
+        }
+        set(value) {
+            textSizePx = sp(value)
+        }
+
+    /** Scales the font as a user action, so [onTextSizeChanged] fires. */
+    private fun zoomBy(factor: Float) {
+        val before = textSizePx
+        textSizePx *= factor
+        if (textSizePx != before) onTextSizeChanged?.invoke(textSizePx)
+    }
 
     /** Terminal grid size derived from the view size and font metrics. */
     var rows: Int = 0
@@ -1085,6 +1111,18 @@ class TerminalView @JvmOverloads constructor(
             copySelection()
             return true
         }
+        // Ctrl+Alt+= / + / - zoom, as in Termux; plain Ctrl+- stays ^_ for readline.
+        if (event.isCtrlPressed && event.isAltPressed) {
+            val factor = when (keyCode) {
+                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> ZOOM_STEP
+                KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 1f / ZOOM_STEP
+                else -> 0f
+            }
+            if (factor != 0f) {
+                zoomBy(factor)
+                return true
+            }
+        }
         val meta = event.metaState
         val special = specialKey(keyCode)
         if (special != 0) {
@@ -1167,6 +1205,9 @@ class TerminalView @JvmOverloads constructor(
         private const val SCROLLBAR_FADE_MS = 300L
         private const val JUMP_RADIUS_DP = 20f
         private const val JUMP_MARGIN_DP = 14f
+
+        /** Font size change per Ctrl+Alt+= / Ctrl+Alt+- press. */
+        private const val ZOOM_STEP = 1.1f
 
         /** Maps Android meta state to [TerminalKeys] modifier bits. */
         fun metaToMods(metaState: Int): Int {

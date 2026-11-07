@@ -25,6 +25,7 @@ import java.io.IOException
 class MainActivity : ComponentActivity() {
 
     private var service by mutableStateOf<FerruxService?>(null)
+    private var isBound = false
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -67,15 +68,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (FerruxAppNative.loadError == null) {
-            bindService(FerruxService.bindIntent(this), connection, Context.BIND_AUTO_CREATE)
+        // Bound from the first start until the Activity is destroyed, not only while it
+        // is visible: unbinding in onStop dropped the terminal view (and with it the IME
+        // connection and zoom) every time the user switched apps.
+        if (FerruxAppNative.loadError == null && !isBound) {
+            isBound = bindService(FerruxService.bindIntent(this), connection, Context.BIND_AUTO_CREATE)
         }
     }
 
-    override fun onStop() {
-        if (FerruxAppNative.loadError == null) unbindService(connection)
+    override fun onDestroy() {
+        if (isBound) unbindService(connection)
+        isBound = false
         service = null
-        super.onStop()
+        super.onDestroy()
     }
 
     private fun newSession() {

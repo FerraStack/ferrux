@@ -90,6 +90,10 @@ ssh sessions do. Any program can, even `cat` of an untrusted file, so Ferrux ask
 first: "Session 1 wants to copy 8 characters to the clipboard". Writes over 1 MiB are
 ignored.
 
+Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font size
+is saved. Switching to another app and back keeps the terminal as it was, including the
+soft keyboard.
+
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
 [`android/terminal-view/licenses/JetBrainsMono-OFL.txt`](android/terminal-view/licenses/JetBrainsMono-OFL.txt).
@@ -165,7 +169,8 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     two sessions in the drawer, CTRL, and text selection: long press, double and
     triple tap, handle drag, Copy, Select all, Paste and OSC 8 hyperlinks; scrollback
     drag, fling, scrollbar and jump button; arrow keys on the alternate screen; mouse
-    wheel and click reporting.
+    wheel and click reporting; switching apps (same session, view, zoom and keyboard)
+    and a process restart (saved zoom).
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

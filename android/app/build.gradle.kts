@@ -50,6 +50,11 @@ android {
             excludes += "**/libferruxterm.so"
         }
     }
+
+    testOptions {
+        // android.util.Log & co. return defaults in plain JVM tests instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

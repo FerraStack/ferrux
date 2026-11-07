@@ -56,8 +56,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ferrux.app.FerruxService
+import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
 import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
@@ -95,7 +98,21 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val sticky = remember { StickyModifierState() }
+    val appContext = LocalContext.current.applicationContext
+    val settings = remember(appContext) { FerruxSettings.get(appContext) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
+
+    // The view survives switching apps, but the soft keyboard goes away with the
+    // window. Bring it back on return if it was up when the user left.
+    var imeWasVisible by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+        imeWasVisible = terminalView?.rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        val view = terminalView
+        if (imeWasVisible && view != null) view.whenWindowFocused { view.showKeyboard() }
+        imeWasVisible = false
+    }
 
     // Closing the last session closes the app, like a terminal window.
     LaunchedEffect(manager) {
@@ -171,11 +188,15 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 if (current != null) {
                     AndroidView(
                         factory = { context ->
-                            TerminalView(context).also {
-                                it.stickyModifiers = sticky
-                                it.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
-                                terminalView = it
-                                ActiveTerminal.view = java.lang.ref.WeakReference(it)
+                            TerminalView(context).also { view ->
+                                view.stickyModifiers = sticky
+                                view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
+                                // The saved zoom, applied before the first layout so the pty
+                                // is sized once.
+                                settings.fontSizeSp.value?.let { view.textSizeSp = it }
+                                view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
+                                terminalView = view
+                                ActiveTerminal.view = java.lang.ref.WeakReference(view)
                             }
                         },
                         update = { view ->
@@ -250,6 +271,21 @@ private fun EdgeSwipeStrip(onOpen: () -> Unit, modifier: Modifier = Modifier) {
     )
 }
 
+/** Runs [action] once this view's window has input focus (now, if it already has). */
+private fun android.view.View.whenWindowFocused(action: () -> Unit) {
+    if (hasWindowFocus()) {
+        action()
+        return
+    }
+    viewTreeObserver.addOnWindowFocusChangeListener(object : android.view.ViewTreeObserver.OnWindowFocusChangeListener {
+        override fun onWindowFocusChanged(hasFocus: Boolean) {
+            if (!hasFocus) return
+            viewTreeObserver.removeOnWindowFocusChangeListener(this)
+            action()
+        }
+    })
+}
+
 private fun androidx.compose.ui.unit.Dp.px(context: android.content.Context): Int =
     (value * context.resources.displayMetrics.density).toInt()
 
@@ -303,7 +339,7 @@ private fun SessionDrawer(
 
 /**
  * The terminal view currently on screen (weakly held), for debug tooling such as the
- * CI `DebugReceiver`, which reads its selection state.
+ * CI `DebugReceiver`, which reads its selection state, identity and font size.
  */
 internal object ActiveTerminal {
     @Volatile
