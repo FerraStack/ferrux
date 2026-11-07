@@ -75,6 +75,9 @@ object FerruxNative {
      */
     @JvmStatic external fun snapshot(id: Long, out: IntArray): Int
 
+    /** The visible screen as text (rows joined by `\n`), or null if there is no such session. */
+    @JvmStatic external fun screenText(id: Long): String?
+
     /**
      * Blocks until the global change counter (bumped on output or events in any
      * session) differs from [lastSeq], or [timeoutMs] elapses. Returns the current counter.

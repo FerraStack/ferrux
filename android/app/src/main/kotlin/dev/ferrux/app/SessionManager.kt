@@ -48,6 +48,10 @@ class SessionManager(private val context: Context) {
     private val outputListeners = CopyOnWriteArraySet<Runnable>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    init {
+        active = this
+    }
+
     @Volatile private var running = true
     private val eventThread = Thread(::eventLoop, "ferrux-events").apply {
         isDaemon = true
@@ -75,6 +79,9 @@ class SessionManager(private val context: Context) {
         )
         _sessions.update { it + SessionInfo(id, title = "Session ${it.size + 1}") }
         _current.value = id
+        // The event thread only drains sessions it knows about; catch anything
+        // (e.g. an immediate exit) that happened before the list was updated.
+        drainEvents(id)
         return id
     }
 
@@ -94,6 +101,7 @@ class SessionManager(private val context: Context) {
 
     /** Kills every session and stops the event thread. */
     fun shutdown() {
+        if (active === this) active = null
         running = false
         killAll()
         eventThread.interrupt()
@@ -120,9 +128,19 @@ class SessionManager(private val context: Context) {
         for (encoded in raw) {
             when (val event = SessionEvent.parse(encoded)) {
                 is SessionEvent.Title -> updateSession(id) { it.copy(title = event.title) }
-                is SessionEvent.Exited -> updateSession(id) { it.copy(exitCode = event.code) }
+                is SessionEvent.Exited -> {
+                    // Like closing a terminal window on `exit`: the session goes away.
+                    // TODO(M4): optionally keep failed sessions open to show their output.
+                    Log.i(FerruxApplication.TAG, "session $id exited with ${event.code}")
+                    updateSession(id) { it.copy(exitCode = event.code) }
+                    mainHandler.post { kill(id) }
+                }
                 is SessionEvent.Bell -> _bells.tryEmit(id)
                 is SessionEvent.Clipboard -> mainHandler.post { setClipboard(event.text) }
+                is SessionEvent.Failed -> {
+                    Log.e(FerruxApplication.TAG, "session $id failed: ${event.message}")
+                    updateSession(id) { it.copy(title = "${it.title} (error)") }
+                }
                 null -> Unit
             }
         }
@@ -138,7 +156,12 @@ class SessionManager(private val context: Context) {
         clipboard.setPrimaryClip(ClipData.newPlainText("Ferrux", text))
     }
 
-    private companion object {
-        const val AWAIT_TIMEOUT_MS = 500
+    companion object {
+        private const val AWAIT_TIMEOUT_MS = 500
+
+        /** The live manager (owned by [FerruxService]); used by debug tooling. */
+        @Volatile
+        var active: SessionManager? = null
+            private set
     }
 }

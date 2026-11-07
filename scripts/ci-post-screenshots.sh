@@ -13,6 +13,8 @@ BRANCH=ci-screenshots
 SHA="${HEAD_SHA:-${GITHUB_SHA:-unknown}}"
 MARKER='<!-- ferra-screenshots -->'
 DEST="pr-$PR/$RUN"
+KEEP_RUNS="${KEEP_RUNS:-3}"   # older runs of this PR are pruned
+PER_ROW=3
 
 shopt -s nullglob
 pngs=("$SRC"/*.png)
@@ -36,7 +38,11 @@ for attempt in 1 2 3 4 5; do
   fi
   mkdir -p "$work/$DEST"
   cp "${pngs[@]}" "$work/$DEST/"
-  git -C "$work" add "$DEST"
+  # Keep only the newest $KEEP_RUNS runs (run ids increase monotonically).
+  ls -1 "$work/pr-$PR" | sort -n | head -n -"$KEEP_RUNS" | while read -r old; do
+    git -C "$work" rm -rq --ignore-unmatch "pr-$PR/$old" || rm -rf "${work:?}/pr-$PR/$old"
+  done
+  git -C "$work" add -A "pr-$PR"
   git -C "$work" commit -qm "screenshots: PR #$PR run $RUN"
   if git -C "$work" push -q origin "$BRANCH"; then
     break
@@ -49,20 +55,32 @@ done
 
 base="https://raw.githubusercontent.com/$REPO/$BRANCH/$DEST"
 run_url="https://github.com/$REPO/actions/runs/$RUN"
-header="|"; sep="|"; cells="|"
+status="${JOB_STATUS:-success}"
+table=""
+row_head="|"; row_img="|"; n=0
+flush_row() {
+  [ "$n" -eq 0 ] && return
+  while [ "$n" -lt "$PER_ROW" ]; do row_head+="  |"; row_img+="  |"; n=$((n + 1)); done
+  table+="$row_head"$'\n'
+  [ -z "${sep_done:-}" ] && { table+="|$(printf ':---:|%.0s' $(seq 1 "$PER_ROW"))"$'\n'; sep_done=1; }
+  table+="$row_img"$'\n'
+  row_head="|"; row_img="|"; n=0
+}
 for png in "${pngs[@]}"; do
   name="$(basename "$png")"
-  header+=" ${name%.png} |"
-  sep+=":---:|"
-  cells+=" <img src=\"$base/$name\" width=\"220\"> |"
+  row_head+=" \`${name%.png}\` |"
+  row_img+=" <a href=\"$base/$name\"><img src=\"$base/$name\" width=\"260\"></a> |"
+  n=$((n + 1))
+  [ "$n" -eq "$PER_ROW" ] && flush_row
 done
+flush_row
+
 body="$MARKER
 ### Emulator screenshots
-API 35 emulator, commit \`${SHA:0:7}\`, [run $RUN]($run_url).
+API 35 emulator (Pixel 6 profile), commit \`${SHA:0:7}\`, [run $RUN]($run_url), job status: **$status**.
+Every screenshot step is checked against the terminal grid and UI tree; see the job log.
 
-$header
-$sep
-$cells"
+$table"
 
 comment_id="$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
   --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)"

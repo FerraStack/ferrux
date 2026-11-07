@@ -41,6 +41,35 @@ service.
 are tested on Linux. The renderer is a Kotlin `Canvas` for now; the wgpu renderer
 (`ferrux-render`) is an M0 spike.
 
+### Look and feel
+
+The app opens straight into a shell, with the terminal edge to edge. The extra-keys
+row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
+key; a double tap locks it. The arrow and page keys repeat while held. To open the
+session drawer, swipe from the left edge or tap ☰. Long-press the terminal to paste.
+
+The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
+under the SIL Open Font License 1.1, in
+[`android/terminal-view/licenses/JetBrainsMono-OFL.txt`](android/terminal-view/licenses/JetBrainsMono-OFL.txt).
+Ligatures are turned off so every glyph stays in its own cell.
+
+The default palette is **Ferrux Night**:
+
+| Index | Colour  | Normal    | Bright    |
+|-------|---------|-----------|-----------|
+| 0 / 8 | black   | `#1C2029` | `#4E5666` |
+| 1 / 9 | red     | `#F0717A` | `#FF8E96` |
+| 2 / 10| green   | `#9BD68A` | `#B6EBA3` |
+| 3 / 11| yellow  | `#EBC47A` | `#F7D99B` |
+| 4 / 12| blue    | `#6CB4F5` | `#92CBFF` |
+| 5 / 13| magenta | `#C79BF2` | `#DDB8FF` |
+| 6 / 14| cyan    | `#5FD1C9` | `#8CE6DF` |
+| 7 / 15| white   | `#C9D1DC` | `#F2F5F9` |
+
+- Foreground is `#D6DCE5`, background `#0E1116` and cursor `#F29E4C`.
+- Entries 16–255 are the standard xterm colour cube and grayscale ramp.
+- Source: `crates/ferrux-term/src/color.rs`.
+
 ### Package name and prefix
 
 The application id is **`dev.ferrux`**, so the prefix is
@@ -89,10 +118,17 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 - **rust**: fmt, clippy and tests.
 - **android**: builds with cargo-ndk, checks 16 KB ELF alignment, runs `assembleDebug`
   and uploads the APK.
-- **screenshots** (pull requests and manual runs only): boots an API 35 emulator,
-  types a few commands and uploads PNG screenshots and logcat. On pull requests it
-  also pushes the PNGs to the `ci-screenshots` branch and posts them in a PR comment,
-  which is updated on every run.
+- **emulator** (pull requests and manual runs only) runs on two emulators:
+  - **API 35 (Pixel 6):** launch, `echo`, `ls` and a colour test, the soft keyboard,
+    two sessions in the drawer, and CTRL.
+  - **API 30:** launch and `echo` only.
+
+  Each step is checked against the real terminal grid, read through a debug-only
+  `DebugReceiver`, and against the UI tree via uiautomator. Logcat is scanned for
+  Java and native crashes, and any failed check fails the job. The API 35 screenshots
+  are pushed to the `ci-screenshots` branch and posted in one PR comment, which is
+  updated on every run. Only the last 3 runs are kept, and the
+  `screenshots-cleanup` workflow deletes them once the PR closes.
 
 ## Roadmap
 

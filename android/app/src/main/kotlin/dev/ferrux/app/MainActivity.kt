@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
@@ -26,15 +27,12 @@ class MainActivity : ComponentActivity() {
 
     private var service by mutableStateOf<FerruxService?>(null)
 
-    /** Start one session automatically on a fresh launch, not after every rebind. */
-    private var autoStartPending = true
-
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             val bound = (binder as FerruxService.LocalBinder).service
             service = bound
-            if (autoStartPending && bound.sessions.sessions.value.isEmpty()) newSession()
-            autoStartPending = false
+            // Like Termux: opening the app always lands in a running shell.
+            if (bound.sessions.sessions.value.isEmpty()) newSession()
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -44,8 +42,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        autoStartPending = savedInstanceState == null
+        // Edge-to-edge with transparent bars over the terminal background; the
+        // content applies the insets itself (see FerruxScreen).
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         requestNotificationPermission()
 
         val loadError = FerruxNative.loadError

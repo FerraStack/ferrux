@@ -1,17 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.ferrux.terminal
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.text.InputType
 import android.util.AttributeSet
+import android.util.SparseArray
 import android.util.TypedValue
+import android.view.ActionMode
 import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -64,11 +72,20 @@ class TerminalView @JvmOverloads constructor(
     /** One-shot modifiers (e.g. from an extra-keys row) applied to the next key or text. */
     var stickyModifiers: StickyModifiers? = null
 
-    var imeMode: ImeMode = ImeMode.TEXT
+    // Character-based input by default (as in Termux): word-composing IMEs
+    // re-compose committed text, which a terminal cannot take back.
+    var imeMode: ImeMode = ImeMode.CHAR_BASED
         set(value) {
             if (field == value) return
             field = value
             inputMethodManager.restartInput(this)
+        }
+
+    /** Blink the cursor while the view is focused (a steady block otherwise). */
+    var cursorBlink: Boolean = true
+        set(value) {
+            field = value
+            restartBlink()
         }
 
     /** Called after pinch-zoom changes the font size (in pixels), e.g. to persist it. */
@@ -96,9 +113,18 @@ class TerminalView @JvmOverloads constructor(
     private val minTextSizePx = sp(MIN_TEXT_SIZE_SP)
     private val maxTextSizePx = sp(MAX_TEXT_SIZE_SP)
 
+    // Bundled JetBrains Mono (OFL, see licenses/JetBrainsMono-OFL.txt). Glyphs it
+    // lacks (CJK, emoji, …) fall back to the system fonts automatically.
+    private val regularFace = loadFont(R.font.jetbrains_mono_regular, Typeface.NORMAL)
+    private val boldFace = loadFont(R.font.jetbrains_mono_bold, Typeface.BOLD)
+    private val italicFace = loadFont(R.font.jetbrains_mono_italic, Typeface.ITALIC)
+    private val boldItalicFace = loadFont(R.font.jetbrains_mono_bold_italic, Typeface.BOLD_ITALIC)
+
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.MONOSPACE
+        typeface = regularFace
         isSubpixelText = true
+        // A terminal grid must never merge cells: no ligatures or contextual alternates.
+        fontFeatureSettings = "'liga' 0, 'calt' 0"
     }
     private val fillPaint = Paint()
     private val linePaint = Paint().apply { style = Paint.Style.STROKE }
@@ -108,11 +134,21 @@ class TerminalView @JvmOverloads constructor(
     private var baselineOffset = 0f
 
     private var snapshot = IntArray(L.requiredSize(24, 80))
+    /** Cell index → base character plus its zero-width characters, for this frame. */
+    private val combining = SparseArray<String>()
     private val charBuffer = CharArray(512)
     private var composing = ""
     private var lastResize = 0 to 0
     private var scrollRemainder = 0f
     private var scaling = false
+    private var cursorOn = true
+    private val blinkRunnable = object : Runnable {
+        override fun run() {
+            cursorOn = !cursorOn
+            invalidate()
+            postDelayed(this, BLINK_INTERVAL_MS)
+        }
+    }
 
     private val inputMethodManager: InputMethodManager
         get() = context.getSystemService(InputMethodManager::class.java)
@@ -123,6 +159,10 @@ class TerminalView @JvmOverloads constructor(
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             showKeyboard()
             return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            if (!scaling) showPasteMenu(e.x, e.y)
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -159,19 +199,44 @@ class TerminalView @JvmOverloads constructor(
     init {
         isFocusable = true
         isFocusableInTouchMode = true
+        contentDescription = "Terminal"
         updateFontMetrics()
     }
+
+    private fun loadFont(id: Int, fallbackStyle: Int): Typeface =
+        runCatching { resources.getFont(id) }.getOrNull()
+            ?: Typeface.create(Typeface.MONOSPACE, fallbackStyle)
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         // Take focus as soon as we are on screen so hardware keys and IME
-        // input reach the terminal rather than the toolbar.
+        // input reach the terminal rather than other widgets.
         post { requestFocus() }
+        restartBlink()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(blinkRunnable)
+        super.onDetachedFromWindow()
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        restartBlink()
+    }
+
+    /** Shows the cursor solid and restarts the blink timer (after input or output). */
+    private fun restartBlink() {
+        removeCallbacks(blinkRunnable)
+        cursorOn = true
+        if (cursorBlink && isAttachedToWindow && hasFocus()) postDelayed(blinkRunnable, BLINK_INTERVAL_MS)
+        invalidate()
     }
 
     /** Requests a redraw. Safe to call from any thread. */
     fun onScreenUpdated() {
-        postInvalidateOnAnimation()
+        // Output keeps the cursor visible, like most terminals.
+        post { restartBlink() }
     }
 
     fun showKeyboard() {
@@ -188,8 +253,11 @@ class TerminalView @JvmOverloads constructor(
         textPaint.textSize = textSizePx
         val fm = textPaint.fontMetrics
         cellWidth = max(1f, textPaint.measureText("M"))
-        cellHeight = max(1f, (fm.descent - fm.ascent).let { kotlin.math.ceil(it) })
-        baselineOffset = -fm.ascent
+        // Line height from the font's ascent+descent (JetBrains Mono's include room
+        // for descenders and accents), rounded up to whole pixels so rows never
+        // overlap and clip each other.
+        cellHeight = max(1f, kotlin.math.ceil(fm.descent - fm.ascent))
+        baselineOffset = kotlin.math.round(-fm.ascent)
         linePaint.strokeWidth = max(1f, textSizePx / 14f)
     }
 
@@ -235,6 +303,7 @@ class TerminalView @JvmOverloads constructor(
         val defaultBg = s[L.H_DEFAULT_BG]
         canvas.drawColor(defaultBg)
         if (n < L.requiredSize(rows, cols)) return
+        readCombining(rows, cols, n)
 
         canvas.save()
         canvas.translate(paddingLeft.toFloat(), paddingTop.toFloat())
@@ -244,6 +313,25 @@ class TerminalView @JvmOverloads constructor(
         }
         drawCursor(canvas, rows, cols)
         canvas.restore()
+    }
+
+    private fun readCombining(rows: Int, cols: Int, n: Int) {
+        combining.clear()
+        val s = snapshot
+        var i = L.combiningOffset(rows, cols)
+        val count = s[i++]
+        repeat(count) {
+            if (i + 2 > n) return
+            val cell = s[i]
+            val len = s[i + 1]
+            i += 2
+            if (i + len > n) return
+            val base = s[L.HEADER_SIZE + cell * L.INTS_PER_CELL + L.C_CODEPOINT]
+            val text = StringBuilder().appendCodePoint(if (base == 0) ' '.code else base)
+            for (k in 0 until len) text.appendCodePoint(s[i + k])
+            combining.put(cell, text.toString())
+            i += len
+        }
     }
 
     private fun cellIndex(row: Int, col: Int, cols: Int) =
@@ -293,16 +381,21 @@ class TerminalView @JvmOverloads constructor(
                 val i = cellIndex(row, end, cols)
                 val c = s[i + L.C_CODEPOINT]
                 val f = s[i + L.C_FLAGS]
-                if (s[i + L.C_FG] != fg || f != flags || c == 0 || f and L.F_WIDE != 0) break
+                if (s[i + L.C_FG] != fg || f != flags || c == 0 || f and (L.F_WIDE or L.F_COMBINING) != 0) break
                 len += Character.toChars(c, charBuffer, len)
                 end++
             }
             if (end == col) {
-                // A wide character (or a style change on the first cell): draw one cell.
-                len = Character.toChars(cp, charBuffer, 0)
+                // A wide or combining character: draw one cell on its own.
                 end = col + if (flags and L.F_WIDE != 0) 2 else 1
                 applyStyle(fg, flags)
-                canvas.drawText(charBuffer, 0, len, col * cellWidth, baseline, textPaint)
+                val cluster = if (flags and L.F_COMBINING != 0) combining[row * cols + col] else null
+                if (cluster != null) {
+                    canvas.drawText(cluster, col * cellWidth, baseline, textPaint)
+                } else {
+                    len = Character.toChars(cp, charBuffer, 0)
+                    canvas.drawText(charBuffer, 0, len, col * cellWidth, baseline, textPaint)
+                }
             } else {
                 applyStyle(fg, flags)
                 val runWidth = (end - col) * cellWidth
@@ -326,8 +419,14 @@ class TerminalView @JvmOverloads constructor(
 
     private fun applyStyle(fg: Int, flags: Int) {
         textPaint.color = if (flags and L.F_DIM != 0) dim(fg) else fg
-        textPaint.isFakeBoldText = flags and L.F_BOLD != 0
-        textPaint.textSkewX = if (flags and L.F_ITALIC != 0) -0.25f else 0f
+        val bold = flags and L.F_BOLD != 0
+        val italic = flags and L.F_ITALIC != 0
+        textPaint.typeface = when {
+            bold && italic -> boldItalicFace
+            bold -> boldFace
+            italic -> italicFace
+            else -> regularFace
+        }
     }
 
     private fun dim(color: Int): Int = Color.argb(
@@ -378,10 +477,22 @@ class TerminalView @JvmOverloads constructor(
         val bg = s[idx + L.C_BG]
         val wide = s[idx + L.C_FLAGS] and L.F_WIDE != 0
         val right = left + cellWidth * if (wide) 2 else 1
-        fillPaint.color = fg
-        when (shapeBits and L.CURSOR_SHAPE_MASK) {
+        // The cursor uses the palette's cursor colour on the default background,
+        // and the cell's own foreground on coloured cells.
+        val cursorColor = if (bg == s[L.H_DEFAULT_BG]) CURSOR_COLOR else fg
+        fillPaint.color = cursorColor
+        val shape = shapeBits and L.CURSOR_SHAPE_MASK
+        if (shape == L.CURSOR_HIDDEN) return
+        if (!hasFocus()) {
+            // Unfocused: a steady hollow box, like desktop terminals.
+            linePaint.color = cursorColor
+            canvas.drawRect(left, top, right, top + cellHeight, linePaint)
+            return
+        }
+        if (!cursorOn) return
+        when (shape) {
             L.CURSOR_BLOCK -> if (shapeBits and L.CURSOR_HOLLOW != 0) {
-                linePaint.color = fg
+                linePaint.color = cursorColor
                 canvas.drawRect(left, top, right, top + cellHeight, linePaint)
             } else {
                 canvas.drawRect(left, top, right, top + cellHeight, fillPaint)
@@ -452,15 +563,85 @@ class TerminalView @JvmOverloads constructor(
      */
     fun sendText(text: String) {
         val b = backend ?: return
-        val mods = consumeSticky()
-        var start = 0
-        while (start <= text.length) {
-            val nl = text.indexOf('\n', start).let { if (it < 0) text.length else it }
-            if (nl > start) b.sendText(text.substring(start, nl), mods)
-            if (nl < text.length) b.sendKey(TerminalKeys.ENTER, mods)
-            start = nl + 1
+        if (text.isEmpty()) return
+        // Sticky modifiers apply to the first code point only: Ctrl + a swiped
+        // word "cd" must send ^C followed by "d", not ^C^D.
+        var mods = consumeSticky()
+        val plain = StringBuilder()
+        fun flushPlain() {
+            if (plain.isNotEmpty()) {
+                b.sendText(plain.toString(), 0)
+                plain.setLength(0)
+            }
         }
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            i += Character.charCount(cp)
+            when {
+                cp == '\n'.code -> {
+                    flushPlain()
+                    b.sendKey(TerminalKeys.ENTER, mods)
+                    mods = 0
+                }
+                mods != 0 -> {
+                    flushPlain()
+                    b.sendText(String(Character.toChars(cp)), mods)
+                    mods = 0
+                }
+                else -> plain.appendCodePoint(cp)
+            }
+        }
+        flushPlain()
         onUserInput()
+    }
+
+    /** Whether a sticky modifier is armed for the next key. */
+    internal fun hasActiveModifier(): Boolean = stickyModifiers?.isActive() == true
+
+    /** Tells the IME our (empty) shadow buffer was reset, so it doesn't re-compose old text. */
+    internal fun resetImeSelection() {
+        inputMethodManager.updateSelection(this, 0, 0, -1, -1)
+    }
+
+    // ---------------------------------------------------------------- clipboard
+
+    /** Pastes the clipboard's text (bracketed paste when the program enabled it). */
+    fun pasteFromClipboard() {
+        val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+        val clip = clipboard.primaryClip ?: return
+        if (clip.itemCount == 0) return
+        val text = clip.getItemAt(0).coerceToText(context)?.toString().orEmpty()
+        if (text.isEmpty()) return
+        backend?.paste(text)
+        onUserInput()
+    }
+
+    private fun showPasteMenu(x: Float, y: Float) {
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        startActionMode(object : ActionMode.Callback2() {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                menu.add(Menu.NONE, MENU_PASTE, 0, android.R.string.paste)
+                    .setEnabled(clipboard?.hasPrimaryClip() == true)
+                // TODO(M4): Copy, once text selection exists.
+                return true
+            }
+
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                if (item.itemId == MENU_PASTE) pasteFromClipboard()
+                mode.finish()
+                return true
+            }
+
+            override fun onDestroyActionMode(mode: ActionMode) = Unit
+
+            override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                outRect.set(x.toInt(), y.toInt(), x.toInt() + 1, y.toInt() + 1)
+            }
+        }, ActionMode.TYPE_FLOATING)
     }
 
     /** Sends a [TerminalKeys] special key as if pressed; sticky modifiers apply. */
@@ -473,6 +654,7 @@ class TerminalView @JvmOverloads constructor(
 
     /** Jump back to the live screen when the user types while scrolled back. */
     private fun onUserInput() {
+        restartBlink()
         if (snapshot[L.H_DISPLAY_OFFSET] > 0) backend?.scroll(-snapshot[L.H_DISPLAY_OFFSET])
     }
 
@@ -482,20 +664,41 @@ class TerminalView @JvmOverloads constructor(
         val b = backend ?: return super.onKeyDown(keyCode, event)
         if (isSystemKey(keyCode)) return super.onKeyDown(keyCode, event)
 
-        val mods = metaToMods(event.metaState) or consumeSticky()
+        if (keyCode == KeyEvent.KEYCODE_PASTE ||
+            (keyCode == KeyEvent.KEYCODE_V && event.isCtrlPressed && event.isShiftPressed)
+        ) {
+            pasteFromClipboard()
+            return true
+        }
+        val meta = event.metaState
         val special = specialKey(keyCode)
         if (special != 0) {
-            b.sendKey(special, mods)
+            b.sendKey(special, metaToMods(meta) or consumeSticky())
             onUserInput()
             return true
         }
 
-        // Printable key: resolve the character without Ctrl/Alt/Meta (the native
-        // encoder applies those), but with Shift/Caps/AltGr layout handling.
-        val stripped = event.metaState and
-            (KeyEvent.META_CTRL_MASK or KeyEvent.META_ALT_MASK or KeyEvent.META_META_MASK).inv()
-        val unicode = event.getUnicodeChar(stripped)
+        // Printable key: resolve the character without Ctrl/Meta/left Alt (the
+        // native encoder applies those), but keep Shift/Caps and right Alt,
+        // which is AltGr on many layouts (German AltGr+Q = '@').
+        val rightAlt = meta and KeyEvent.META_ALT_RIGHT_ON != 0
+        var strip = KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK or KeyEvent.META_ALT_LEFT_ON
+        if (!rightAlt) strip = strip or KeyEvent.META_ALT_ON
+        var unicode = event.getUnicodeChar(meta and strip.inv())
+        var mods = metaToMods(meta)
+        if (rightAlt) {
+            if (unicode != 0) {
+                // AltGr produced a character; it is not an Alt modifier.
+                if (meta and KeyEvent.META_ALT_LEFT_ON == 0) mods = mods and TerminalKeys.MOD_ALT.inv()
+            } else {
+                // No AltGr mapping on this layout: treat right Alt as Alt.
+                unicode = event.getUnicodeChar(
+                    meta and (KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK or KeyEvent.META_ALT_MASK).inv(),
+                )
+            }
+        }
         if (unicode == 0) return super.onKeyDown(keyCode, event)
+        mods = mods or consumeSticky()
         if (unicode and KeyCharacterMap.COMBINING_ACCENT != 0) {
             // TODO(M4): dead-key composition for hardware keyboards.
             return true
@@ -524,6 +727,11 @@ class TerminalView @JvmOverloads constructor(
 
     companion object {
         private const val DEFAULT_TEXT_SIZE_SP = 13f
+        private const val BLINK_INTERVAL_MS = 530L
+        private const val MENU_PASTE = 1
+
+        /** Cursor colour of the default "Ferrux Night" palette (ferrux-term). */
+        private const val CURSOR_COLOR = 0xFFF29E4C.toInt()
         private const val MIN_TEXT_SIZE_SP = 6f
         private const val MAX_TEXT_SIZE_SP = 40f
 

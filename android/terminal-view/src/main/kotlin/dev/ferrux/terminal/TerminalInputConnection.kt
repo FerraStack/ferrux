@@ -29,7 +29,17 @@ internal class TerminalInputConnection(
         return true
     }
 
+    /**
+     * Recently committed text since the last Enter, so IME deletions counted in
+     * UTF-16 units can be turned into the right number of Backspaces (an emoji
+     * is 2 units but 1 Backspace).
+     */
+    private val history = StringBuilder()
+
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        // With CTRL/ALT armed the next character must go out now, not when the
+        // IME decides to finish the word.
+        if (view.hasActiveModifier()) return commitText(text, newCursorPosition)
         val handled = super.setComposingText(text, newCursorPosition)
         view.setComposingText(editable?.toString().orEmpty())
         return handled
@@ -56,17 +66,60 @@ internal class TerminalInputConnection(
             return handled
         }
         // Nothing composed: the IME means "delete characters in the terminal".
-        repeat(beforeLength) { view.sendKey(TerminalKeys.BACKSPACE) }
+        repeat(codePointsBeforeCursor(beforeLength)) { view.sendKey(TerminalKeys.BACKSPACE) }
         repeat(afterLength) { view.sendKey(TerminalKeys.DELETE) }
         return true
     }
 
-    override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
-        deleteSurroundingText(beforeLength, afterLength)
+    override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+        val buffer = editable
+        if (buffer != null && buffer.isNotEmpty()) {
+            val handled = super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
+            view.setComposingText(buffer.toString())
+            return handled
+        }
+        repeat(beforeLength) {
+            if (history.isNotEmpty()) {
+                history.setLength(history.length - Character.charCount(Character.codePointBefore(history, history.length)))
+            }
+            view.sendKey(TerminalKeys.BACKSPACE)
+        }
+        repeat(afterLength) { view.sendKey(TerminalKeys.DELETE) }
+        return true
+    }
+
+    /** Converts [units] UTF-16 units before the cursor to code points, consuming [history]. */
+    private fun codePointsBeforeCursor(units: Int): Int {
+        var remaining = units
+        var count = 0
+        var end = history.length
+        while (remaining > 0 && end > 0) {
+            val cp = Character.codePointBefore(history, end)
+            val n = Character.charCount(cp)
+            end -= n
+            remaining -= n
+            count++
+        }
+        history.setLength(end)
+        // Text we never saw (typed before this connection): one unit each.
+        return count + maxOf(0, remaining)
+    }
+
+    private fun remember(text: String) {
+        val nl = text.lastIndexOf('\n')
+        if (nl >= 0) {
+            history.setLength(0)
+            history.append(text, nl + 1, text.length)
+        } else {
+            history.append(text)
+        }
+        if (history.length > HISTORY_LIMIT) history.delete(0, history.length - HISTORY_LIMIT)
+    }
 
     override fun performEditorAction(actionCode: Int): Boolean {
         // Some keyboards report the Enter key as an editor action instead of a key event.
         flushEditable()
+        history.setLength(0)
         view.sendKey(TerminalKeys.ENTER)
         return true
     }
@@ -83,6 +136,16 @@ internal class TerminalInputConnection(
         val text = buffer.toString()
         buffer.clear()
         view.setComposingText("")
-        if (text.isNotEmpty()) view.sendText(text)
+        if (text.isNotEmpty()) {
+            remember(text)
+            view.sendText(text)
+        }
+        // Our shadow buffer is empty again; tell the IME so it doesn't try to
+        // re-compose (and re-send) the word it just committed.
+        view.resetImeSelection()
+    }
+
+    private companion object {
+        const val HISTORY_LIMIT = 256
     }
 }

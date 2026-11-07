@@ -75,7 +75,18 @@ object SnapshotLayout {
     const val F_DOUBLE_UNDERLINE = 1 shl 8
     const val F_UNDERCURL = 1 shl 9
 
-    fun requiredSize(rows: Int, cols: Int): Int = HEADER_SIZE + rows * cols * INTS_PER_CELL
+    /** Zero-width characters follow the base character; see the combining table. */
+    const val F_COMBINING = 1 shl 10
+
+    /**
+     * Minimum size for a [rows]×[cols] snapshot. After the cells comes the
+     * combining table: `count`, then `count` × (`cellIndex, n, codepoint × n`).
+     * When it doesn't fit, [FerruxNative.snapshot] returns the exact size needed.
+     */
+    fun requiredSize(rows: Int, cols: Int): Int = HEADER_SIZE + rows * cols * INTS_PER_CELL + 1
+
+    /** Offset of the combining table in a snapshot with [rows]×[cols] cells. */
+    fun combiningOffset(rows: Int, cols: Int): Int = HEADER_SIZE + rows * cols * INTS_PER_CELL
 }
 
 /** A decoded entry from [FerruxNative.pollEvents]. */
@@ -84,6 +95,7 @@ sealed interface SessionEvent {
     data object Bell : SessionEvent
     data class Exited(val code: Int) : SessionEvent
     data class Clipboard(val text: String) : SessionEvent
+    data class Failed(val message: String) : SessionEvent
 
     companion object {
         /** Parses one encoded event; returns null for unknown kinds (forward compatibility). */
@@ -95,6 +107,7 @@ sealed interface SessionEvent {
                 'B' -> Bell
                 'X' -> Exited(payload.toIntOrNull() ?: -1)
                 'C' -> Clipboard(payload)
+                'E' -> Failed(payload)
                 else -> null
             }
         }

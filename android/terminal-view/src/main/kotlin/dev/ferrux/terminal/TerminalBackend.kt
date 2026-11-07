@@ -49,4 +49,7 @@ class NativeSessionBackend(val sessionId: Long) : TerminalBackend {
  */
 fun interface StickyModifiers {
     fun consume(): Int
+
+    /** Whether any modifier is armed, i.e. the next key will be modified. */
+    fun isActive(): Boolean = false
 }
