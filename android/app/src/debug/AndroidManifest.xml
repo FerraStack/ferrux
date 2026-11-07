@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Debug builds only: test hooks used by the CI emulator job. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Exported so `adb shell am broadcast` can reach it; absent from release builds. -->
+        <receiver
+            android:name=".debug.DebugReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver"
+            xmlns:tools="http://schemas.android.com/tools">
+            <intent-filter>
+                <action android:name="dev.ferrux.debug.DUMP_SCREEN" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

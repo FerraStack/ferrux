@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ferrux</string>
+    <string name="sessions">Sessions</string>
+    <string name="new_session">New session</string>
+    <string name="kill_session">Kill session</string>
+    <string name="open_drawer">Open session drawer</string>
+    <string name="native_missing">libferrux.so failed to load. Build the APK without -Pferrux.skipCargo=true.\n\n%1$s</string>
+    <string name="session_failed">Could not start a session: %1$s</string>
+    <string name="exited">exited %1$d</string>
+    <string name="notification_channel">Terminal sessions</string>
+    <string name="notification_text">%1$d session(s) running</string>
+    <string name="notification_exit">Exit</string>
+</resources>

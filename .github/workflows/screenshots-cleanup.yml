@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# Removes a pull request's screenshots from the ci-screenshots branch once the
+# PR is closed or merged.
+name: Screenshot cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Delete pr-<number>/ from ci-screenshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          git -C "$work" init -q
+          git -C "$work" config user.name "github-actions[bot]"
+          git -C "$work" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$work" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git -C "$work" fetch -q --depth 1 origin ci-screenshots || { echo "no ci-screenshots branch"; exit 0; }
+          git -C "$work" checkout -q -B ci-screenshots FETCH_HEAD
+          if [ -d "$work/pr-$PR" ]; then
+            git -C "$work" rm -rq "pr-$PR"
+            git -C "$work" commit -qm "screenshots: remove PR #$PR"
+            git -C "$work" push -q origin ci-screenshots
+          fi

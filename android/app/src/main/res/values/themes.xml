@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform theme: no AppCompat needed; Compose draws the chrome. -->
+    <style name="Theme.Ferrux" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ferrux_background</item>
+        <item name="android:colorAccent">@color/ferrux_accent</item>
+    </style>
+</resources>
