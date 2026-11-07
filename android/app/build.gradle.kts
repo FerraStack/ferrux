@@ -54,6 +54,8 @@ android {
     testOptions {
         // android.util.Log & co. return defaults in plain JVM tests instead of throwing.
         unitTests.isReturnDefaultValues = true
+        // Robolectric (Compose UI tests) needs the merged resources and manifest.
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -75,6 +77,11 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    // Compose UI tests run on Robolectric, without an emulator.
+    testImplementation(libs.robolectric)
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
 
 // ---------------------------------------------------------------------------

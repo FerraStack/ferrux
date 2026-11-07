@@ -51,7 +51,10 @@ are tested on Linux. Other apps (Ferride, API clients) reuse the terminal throug
 The app opens straight into a shell, with the terminal edge to edge. The extra-keys
 row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
 key; a double tap locks it. The arrow and page keys repeat while held. To open the
-session drawer, swipe from the left edge or tap ☰.
+session drawer, swipe from the left edge or tap ☰. With TalkBack or Switch Access,
+CTRL and ALT are switches that announce their state (off, on for the next key, or
+locked), keys have spoken names ("Escape", "Up arrow", "Slash"), and every key can be
+activated.
 
 Selecting text works like in a text field:
 
@@ -174,7 +177,8 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
   and the JVM unit tests, and uploads the APK.
 - **emulator** (pull requests and manual runs only) runs on two emulators:
   - **API 35 (Pixel 6):** launch, `echo`, `ls` and a colour test, the soft keyboard,
-    two sessions in the drawer, CTRL, and text selection: long press, double and
+    two sessions in the drawer, CTRL (with the checked state and names that
+    accessibility services read), and text selection: long press, double and
     triple tap, handle drag, Copy, Select all, Paste and OSC 8 hyperlinks; scrollback
     drag, fling, scrollbar and jump button; arrow keys on the alternate screen; mouse
     wheel and click reporting; switching apps (same session, view, zoom and keyboard);

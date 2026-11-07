@@ -217,6 +217,25 @@ tap_bounds() {
 
 tap_node() { tap_bounds "$(wait_node "$1")"; }
 
+# expect_node <selector> <attr="value">...: waits up to 10 s for the first node
+# matching <selector> to have all the given attributes.
+expect_node() {
+  local sel="$1" i n a ok
+  shift
+  for i in $(seq 1 10); do
+    n="$(node "$sel")"
+    ok=1
+    for a in "$@"; do printf '%s' "$n" | grep -qF -- "$a" || ok=0; done
+    if [ "$ok" = 1 ]; then
+      log "ok: $sel has $*"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "node: $n"
+  fail "$sel lacks one of: $*"
+}
+
 # All windows, including popups such as the floating text toolbar.
 ui_dump_windows() {
   adb shell uiautomator dump --windows /sdcard/ui-all.xml > /dev/null 2>&1 || true
@@ -441,19 +460,36 @@ shot 05-drawer
 tap_node 'text="Session 2"'
 sleep 1
 
-log "06: CTRL toggle"
+log "06: CTRL toggle, as accessibility services see it"
+# The keys are found by resource-id (their test tag); content-desc is the spoken name.
+CTRL='resource-id="key-CTRL"'
+expect_node "$CTRL" 'content-desc="Control"' 'checkable="true"' 'checked="false"' 'clickable="true"'
+expect_node 'resource-id="key-ESC"' 'content-desc="Escape"' 'clickable="true"'
+expect_node 'resource-id="key-Up"' 'content-desc="Up arrow"' 'clickable="true"'
+expect_node 'resource-id="key-/"' 'content-desc="Slash"' 'clickable="true"'
 # Behavioural check: CTRL applies to exactly the next key. Ctrl+A moves to
 # the start of the line in mksh, then '#' (unmodified) comments the line out.
 type_text 'echo%sX'
-tap_node 'content-desc="CTRL"'
-sleep 1
-log "CTRL node: $(node 'content-desc="CTRL"' | grep -oE '(checkable|checked|selected)="[a-z]+"' | tr '\n' ' ')"
+tap_node "$CTRL"
+expect_node "$CTRL" 'checked="true"'
 shot 06-ctrl
 adb shell input text a
 adb shell "input text '#'" # quoted: # starts a comment in the device shell
 expect_screen '^~ \$ #echo X$' "CTRL+A then # (modifier applied to one key only)"
+expect_node "$CTRL" 'checked="false"'
 adb shell input keyevent KEYCODE_ENTER
 expect_screen '^sessions=2 ' "sessions still alive"
+# A double tap locks CTRL: it stays checked after a key, until tapped again.
+xy="$(node "$CTRL" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | grep -oE '[0-9]+' | tr '\n' ' ' |
+  awk '{ printf "%d %d", ($1 + $3) / 2, ($2 + $4) / 2 }')"
+adb shell "input tap $xy; input tap $xy"
+expect_node "$CTRL" 'checked="true"'
+shot 06b-ctrl-locked
+adb shell input text u # ^U on an empty line: harmless
+expect_node "$CTRL" 'checked="true"'
+log "ok: locked CTRL stays on after a key"
+tap_node "$CTRL"
+expect_node "$CTRL" 'checked="false"'
 
 log "07: long press selects a word, with handles and the action mode"
 run_line 'clear'

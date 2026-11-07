@@ -5,6 +5,8 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -28,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -42,10 +45,8 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.Font
@@ -72,12 +73,16 @@ enum class KeyIcon { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Menu }
 /** One key of the extra-keys row. */
 @Immutable
 sealed interface ExtraKey {
-    /** Accessible name; also what UI tests select on (content-desc). */
+    /** Stable id ("CTRL", "Up", "/"); UI tests select on it as resource-id `key-<name>`. */
     val name: String
+
+    /** What TalkBack says: words, not glyphs ("Control", "Up arrow", "Slash"). */
+    val description: String
 
     data class Special(
         override val name: String,
         val code: Int,
+        override val description: String,
         val label: String = name,
         val icon: KeyIcon? = null,
         /** Repeats while held, like a hardware key. */
@@ -86,12 +91,25 @@ sealed interface ExtraKey {
 
     data class Literal(val text: String, val label: String = text) : ExtraKey {
         override val name: String get() = text
+        override val description: String get() = SYMBOL_NAMES[text] ?: text
     }
 
-    data class Toggle(override val name: String, val mod: Int) : ExtraKey
+    data class Toggle(override val name: String, val mod: Int, override val description: String) : ExtraKey
 
-    data class Action(override val name: String, val action: ExtraKeyAction, val icon: KeyIcon) : ExtraKey
+    data class Action(override val name: String, val action: ExtraKeyAction, val icon: KeyIcon) : ExtraKey {
+        override val description: String get() = name
+    }
 }
+
+/** Spoken names for symbols that TalkBack would otherwise skip or misread. */
+private val SYMBOL_NAMES = mapOf(
+    "/" to "Slash", "\\" to "Backslash", "-" to "Minus", "_" to "Underscore", "|" to "Pipe",
+    "~" to "Tilde", "`" to "Backtick", "'" to "Single quote", "\"" to "Double quote",
+    ":" to "Colon", ";" to "Semicolon", "*" to "Asterisk", "&" to "Ampersand", "$" to "Dollar",
+    "#" to "Hash", "!" to "Exclamation mark", "?" to "Question mark", "=" to "Equals", "+" to "Plus",
+    "<" to "Less than", ">" to "Greater than", "(" to "Left parenthesis", ")" to "Right parenthesis",
+    "[" to "Left bracket", "]" to "Right bracket", "{" to "Left brace", "}" to "Right brace",
+)
 
 /**
  * Rows of extra keys. Built from Termux-style key names so a user-editable
@@ -103,20 +121,22 @@ data class ExtraKeysLayout(val rows: List<List<ExtraKey>>) {
     companion object {
         /** Maps a key name to a key; anything unknown is sent as literal text. */
         fun key(name: String): ExtraKey = when (name.uppercase()) {
-            "ESC" -> ExtraKey.Special("ESC", TerminalKeys.ESCAPE)
-            "TAB" -> ExtraKey.Special("TAB", TerminalKeys.TAB)
-            "CTRL" -> ExtraKey.Toggle("CTRL", TerminalKeys.MOD_CTRL)
-            "ALT" -> ExtraKey.Toggle("ALT", TerminalKeys.MOD_ALT)
-            "UP" -> ExtraKey.Special("Up", TerminalKeys.UP, icon = KeyIcon.ArrowUp, repeatable = true)
-            "DOWN" -> ExtraKey.Special("Down", TerminalKeys.DOWN, icon = KeyIcon.ArrowDown, repeatable = true)
-            "LEFT" -> ExtraKey.Special("Left", TerminalKeys.LEFT, icon = KeyIcon.ArrowLeft, repeatable = true)
-            "RIGHT" -> ExtraKey.Special("Right", TerminalKeys.RIGHT, icon = KeyIcon.ArrowRight, repeatable = true)
-            "HOME" -> ExtraKey.Special("HOME", TerminalKeys.HOME)
-            "END" -> ExtraKey.Special("END", TerminalKeys.END)
-            "PGUP" -> ExtraKey.Special("PGUP", TerminalKeys.PAGE_UP, repeatable = true)
-            "PGDN" -> ExtraKey.Special("PGDN", TerminalKeys.PAGE_DOWN, repeatable = true)
-            "DEL" -> ExtraKey.Special("DEL", TerminalKeys.DELETE, repeatable = true)
-            "BKSP" -> ExtraKey.Special("BKSP", TerminalKeys.BACKSPACE, label = "⌫", repeatable = true)
+            "ESC" -> ExtraKey.Special("ESC", TerminalKeys.ESCAPE, "Escape")
+            "TAB" -> ExtraKey.Special("TAB", TerminalKeys.TAB, "Tab")
+            "CTRL" -> ExtraKey.Toggle("CTRL", TerminalKeys.MOD_CTRL, "Control")
+            "ALT" -> ExtraKey.Toggle("ALT", TerminalKeys.MOD_ALT, "Alt")
+            "UP" -> ExtraKey.Special("Up", TerminalKeys.UP, "Up arrow", icon = KeyIcon.ArrowUp, repeatable = true)
+            "DOWN" -> ExtraKey.Special("Down", TerminalKeys.DOWN, "Down arrow", icon = KeyIcon.ArrowDown, repeatable = true)
+            "LEFT" -> ExtraKey.Special("Left", TerminalKeys.LEFT, "Left arrow", icon = KeyIcon.ArrowLeft, repeatable = true)
+            "RIGHT" -> ExtraKey.Special(
+                "Right", TerminalKeys.RIGHT, "Right arrow", icon = KeyIcon.ArrowRight, repeatable = true,
+            )
+            "HOME" -> ExtraKey.Special("HOME", TerminalKeys.HOME, "Home")
+            "END" -> ExtraKey.Special("END", TerminalKeys.END, "End")
+            "PGUP" -> ExtraKey.Special("PGUP", TerminalKeys.PAGE_UP, "Page up", repeatable = true)
+            "PGDN" -> ExtraKey.Special("PGDN", TerminalKeys.PAGE_DOWN, "Page down", repeatable = true)
+            "DEL" -> ExtraKey.Special("DEL", TerminalKeys.DELETE, "Delete", repeatable = true)
+            "BKSP" -> ExtraKey.Special("BKSP", TerminalKeys.BACKSPACE, "Backspace", label = "⌫", repeatable = true)
             "DRAWER" -> ExtraKey.Action("Sessions", ExtraKeyAction.Drawer, KeyIcon.Menu)
             else -> ExtraKey.Literal(name)
         }
@@ -189,6 +209,7 @@ private val KeyFont = FontFamily(
  * focus (and the IME connection) from the terminal. Keys fire on press, with
  * haptic feedback; arrows and page keys repeat while held.
  */
+@OptIn(ExperimentalComposeUiApi::class) // testTagsAsResourceId
 @Composable
 fun ExtraKeysRow(
     layout: ExtraKeysLayout,
@@ -201,6 +222,8 @@ fun ExtraKeysRow(
     Column(
         modifier
             .fillMaxWidth()
+            // Exposes each key's test tag ("key-CTRL") as its resource-id to uiautomator.
+            .semantics { testTagsAsResourceId = true }
             .background(TerminalColors.ExtraKeysBackground)
             .padding(horizontal = 2.dp, vertical = 2.dp),
     ) {
@@ -241,6 +264,22 @@ private fun KeyCell(
     val scope = rememberCoroutineScope()
     val currentOnPress by rememberUpdatedState(onPress)
     var pressed by remember { mutableStateOf(false) }
+    // clickable / toggleable give the key its role, its click action and, for CTRL and
+    // ALT, the checked state that TalkBack, Switch Access and uiautomator read. Touch
+    // never reaches them: the press handler below fires on the way down (and repeats
+    // while held) and consumes the touch. So their onClick only runs for an
+    // accessibility click, which fires the key once.
+    val action = if (key is ExtraKey.Toggle) {
+        Modifier.toggleable(
+            value = state != ModState.Off,
+            interactionSource = null,
+            indication = null,
+            role = Role.Switch,
+            onValueChange = { currentOnPress() },
+        )
+    } else {
+        Modifier.clickable(interactionSource = null, indication = null, role = Role.Button) { currentOnPress() }
+    }
 
     val background = when {
         state == ModState.Locked -> TerminalColors.Accent
@@ -261,24 +300,24 @@ private fun KeyCell(
             .padding(horizontal = 2.dp, vertical = 3.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(background)
+            // Keys never take input focus, so the IME stays connected to the terminal.
             .focusProperties { canFocus = false }
-            .semantics(mergeDescendants = true) {
-                role = Role.Button
-                contentDescription = key.name
+            .then(action)
+            .semantics {
+                contentDescription = key.description
+                testTag = "key-${key.name}"
                 if (key is ExtraKey.Toggle) {
-                    role = Role.Switch
-                    toggleableState = if (state != ModState.Off) ToggleableState.On else ToggleableState.Off
                     stateDescription = when (state) {
                         ModState.Off -> "off"
                         ModState.Once -> "on for next key"
                         ModState.Locked -> "locked"
                     }
                 }
-                onClick { currentOnPress(); true }
             }
+            // After (inside) the click modifier, so it sees and consumes each touch first.
             .pointerInput(key, repeatable) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false).consume()
                     pressed = true
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     currentOnPress()
@@ -292,7 +331,7 @@ private fun KeyCell(
                             }
                         }
                     }
-                    waitForUpOrCancellation()
+                    waitForUpOrCancellation()?.consume()
                     repeater?.cancel()
                     pressed = false
                 }
