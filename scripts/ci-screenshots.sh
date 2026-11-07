@@ -233,9 +233,27 @@ show_ime() {
 
 # `input text` needs %s for spaces; keep shell metacharacters out (adb shell
 # passes the string through the device's sh).
+#
+# Even with the keyboard up, Gboard's first start can still drop or reorder a few
+# injected keys. So the typed text is checked on the prompt line; if it isn't
+# there, the line is erased and typed once more. A real input bug fails twice.
 type_text() {
+  local want="${1//%s/ }" attempt i line
+  want="${want% }"
   show_ime
-  adb shell input text "$1"
+  for attempt in 1 2; do
+    adb shell input text "$1"
+    for i in $(seq 1 12); do
+      line="$(grid_lines | grep -v '^$' | tail -n1)"
+      case "$line" in *"$want") return 0 ;; esac
+      sleep 0.25
+    done
+    log "typed '$want' but the line shows '$line'; retyping"
+    # Erase what reached the line (after the 4-character "~ $ " prompt).
+    adb shell input keyevent $(printf 'KEYCODE_DEL %.0s' $(seq 1 $((${#line} > 4 ? ${#line} - 4 : 1))))
+    sleep 0.5
+  done
+  fail "could not type '$want' (line: '$line')"
 }
 
 type_line() {
