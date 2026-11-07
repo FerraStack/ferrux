@@ -222,7 +222,7 @@ import dev.ferrux.api.SpawnResult;
 interface IFerruxApi {
     const int API_VERSION = 1;
 
-    // ServiceSpecificException error codes (§7).
+    // Error codes, thrown as IllegalStateException("E<code>: message") (§7).
     const int ERR_INVALID_ARGUMENT = 1;
     const int ERR_NOT_FOUND = 2;
     const int ERR_NO_SUCH_HANDLE = 3;
@@ -597,11 +597,17 @@ thread (spawn can take some milliseconds); `ferrux-client` does its calls on
 | Condition | Delivered as |
 |---|---|
 | Caller lacks the permission | `SecurityException` |
-| Error codes in `IFerruxApi` (`ERR_*`) | `ServiceSpecificException(code, message)` |
+| Error codes in `IFerruxApi` (`ERR_*`) | `IllegalStateException` with the message `E<code>: <text>`, e.g. `E4: /etc/hosts: outside the home directory` |
+| Missing or malformed arguments (null path, null callback) | `IllegalArgumentException` / `NullPointerException` |
 | Method unknown to this Ferrux (newer client) | `RemoteException`/`UnsupportedOperationException`, mapped by `ferrux-client` |
 | Ferrux died during a call | `DeadObjectException` |
 
-`ferrux-client` maps all of these to a sealed `FerruxException`.
+Binder only carries a fixed set of exception types across processes.
+`ServiceSpecificException`, the usual carrier of service error codes, is not
+part of the app SDK, so neither side could use it. The `E<code>: ` prefix is
+the contract instead: `dev.ferrux.api.ApiErrors` builds and parses it, and
+`ferrux-client` maps all of these to a sealed `FerruxException`
+(`FerruxException.Api(code, text)` for the `ERR_*` codes).
 
 ## 8. When Ferrux isn't installed (or can't be used)
 
