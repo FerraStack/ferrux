@@ -234,6 +234,20 @@ pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_snapshot<'caller>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_screenText<'caller>(
+    mut env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    id: jlong,
+) -> JString<'caller> {
+    env.with_env(|env| match core::screen_text(id) {
+        Some(text) => JString::from_str(env, text),
+        // null: no such session.
+        None => Ok(JString::default()),
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_ferrux_terminal_FerruxNative_awaitChange<'caller>(
     mut env: EnvUnowned<'caller>,
     _class: JClass<'caller>,

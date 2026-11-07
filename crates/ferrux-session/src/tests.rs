@@ -248,3 +248,59 @@ fn spawn_errors_propagate() {
     assert!(matches!(err, SpawnError::Child { .. }), "{err:?}");
     assert!(mgr.ids().is_empty());
 }
+
+#[test]
+fn io_loop_goes_idle_after_exit() {
+    let mgr = SessionManager::new().unwrap();
+    let s = mgr.spawn(&sh("exit 0"), TermConfig::default()).unwrap();
+    wait_for(&mgr, &s, "exit", |s| s.exit_status().is_some());
+    // Let the EOF be observed, then make sure nothing keeps waking the loop.
+    std::thread::sleep(Duration::from_millis(100));
+    let wakeups = mgr.io_wakeups();
+    let seq = mgr.change_seq();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        mgr.io_wakeups() - wakeups <= 2,
+        "I/O loop spins: {} wakeups",
+        mgr.io_wakeups() - wakeups
+    );
+    assert_eq!(mgr.change_seq(), seq, "change counter keeps moving");
+}
+
+#[test]
+fn close_hangs_up_foreground_job_and_releases_pty() {
+    let mgr = SessionManager::new().unwrap();
+    // A foreground job in its own process group that ignores nothing: the
+    // shell runs `sleep` with job control so it gets a separate pgid.
+    let s = mgr
+        .spawn(
+            &sh("set -m; sleep 30; echo unreachable"),
+            TermConfig::default(),
+        )
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let weak = Arc::downgrade(&s);
+    let id = s.id();
+    let pid = s.pid().unwrap();
+    drop(s);
+    assert!(mgr.close(id));
+    // The session (and its pty master) is freed even though the child may
+    // still be exiting.
+    let start = Instant::now();
+    while weak.upgrade().is_some() {
+        assert!(
+            start.elapsed() < TIMEOUT,
+            "session still referenced after close"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The shell is gone (SIGHUP, or SIGKILL after the grace period).
+    let start = Instant::now();
+    while rustix::process::test_kill_process(rustix::process::Pid::from_raw(pid).unwrap()).is_ok() {
+        assert!(
+            start.elapsed() < CLOSE_GRACE + TIMEOUT,
+            "shell {pid} still alive"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

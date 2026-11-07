@@ -29,7 +29,7 @@ use alacritty_terminal::vte::ansi::{self, Color, CursorShape as EngineCursorShap
 
 pub use color::{Palette, Rgb};
 pub use keys::{Key, KeyMode, Modifiers};
-pub use snapshot::{Cell, CellFlags, Cursor, CursorShape, Modes, Snapshot};
+pub use snapshot::{Cell, CellFlags, Combining, Cursor, CursorShape, Modes, Snapshot};
 
 /// Terminal dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +313,7 @@ impl Terminal {
         snap.default_bg = default_bg;
         snap.modes = self.modes();
         snap.cells.clear();
+        snap.combining.clear();
         snap.cells.resize(
             rows * cols,
             Cell {
@@ -322,6 +323,8 @@ impl Terminal {
             },
         );
 
+        // display_iter walks the grid in row-major order, so `combining`
+        // ends up sorted by cell index.
         for indexed in content.display_iter {
             let Some(point) = term::point_to_viewport(content.display_offset, indexed.point) else {
                 continue;
@@ -330,7 +333,16 @@ impl Terminal {
                 continue;
             }
             let src = indexed.cell;
-            snap.cells[point.line * cols + point.column.0] = self.convert_cell(src);
+            let index = point.line * cols + point.column.0;
+            let mut cell = self.convert_cell(src);
+            if let Some(chars) = src.zerowidth().filter(|z| !z.is_empty() && cell.ch != ' ') {
+                cell.flags.insert(CellFlags::COMBINING);
+                snap.combining.push(Combining {
+                    cell: index,
+                    chars: chars.to_vec(),
+                });
+            }
+            snap.cells[index] = cell;
         }
 
         let cursor = content.cursor;

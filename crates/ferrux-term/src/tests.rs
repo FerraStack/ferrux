@@ -191,10 +191,34 @@ fn int_encoding_layout() {
     let s = t.snapshot();
     let mut out = vec![0i32; s.encoded_len()];
     assert_eq!(s.encode_ints(&mut out[..5]), None);
-    assert_eq!(s.encode_ints(&mut out), Some(8 + 6 * 4));
+    assert_eq!(s.encode_ints(&mut out), Some(8 + 6 * 4 + 1));
+    assert_eq!(out[8 + 6 * 4], 0, "empty combining table");
     assert_eq!(&out[..6], &[2, 3, 0, 1, 1, 0]);
     assert_eq!(out[6] as u32, Palette::default().background.to_argb());
     assert_eq!(out[8], 'A' as i32);
     assert_eq!(out[9] as u32, Palette::default().indexed[1].to_argb());
     assert_eq!(out[12], 0, "blank cell encodes as codepoint 0");
+}
+
+#[test]
+fn combining_marks_are_kept() {
+    let mut t = term(3, 20);
+    // Decomposed é, emoji + VS16, Hangul L+V jamo, emoji ZWJ sequence.
+    t.feed("e\u{301}x ❤\u{FE0F} \u{1100}\u{1161} 👨\u{200D}👩".as_bytes());
+    let s = t.snapshot();
+    assert!(s.cell(0, 0).flags.contains(CellFlags::COMBINING));
+    assert_eq!(s.combining_at(0, 0), &['\u{301}']);
+    assert!(!s.cell(0, 1).flags.contains(CellFlags::COMBINING));
+    assert_eq!(s.combining_at(0, 3), &['\u{FE0F}']);
+    let text = s.row_text(0);
+    assert!(text.starts_with("e\u{301}x ❤\u{FE0F} "), "{text:?}");
+    assert!(text.contains("\u{1100}\u{1161}"), "{text:?}");
+    assert!(text.contains("👨\u{200D}"), "{text:?}");
+
+    // Integer encoding carries the side table.
+    let mut out = vec![0i32; s.encoded_len()];
+    s.encode_ints(&mut out).unwrap();
+    let table = &out[8 + 3 * 20 * 4..];
+    assert_eq!(table[0] as usize, s.combining.len());
+    assert_eq!(&table[1..4], &[0, 1, 0x301]);
 }

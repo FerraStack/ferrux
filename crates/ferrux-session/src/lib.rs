@@ -17,8 +17,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,9 @@ pub enum SessionEvent {
     ClipboardStore(String),
     /// The child process terminated.
     Exited(ExitStatus),
+    /// The terminal engine failed (a bug); the session stops processing
+    /// output but other sessions are unaffected.
+    Failed(String),
 }
 
 /// A running (or finished) session.
@@ -49,10 +53,34 @@ pub enum SessionEvent {
 pub struct Session {
     id: SessionId,
     master: PtyMaster,
-    pid: Option<i32>,
+    child: Option<Arc<ChildHandle>>,
     state: Mutex<State>,
     shared: Arc<Shared>,
 }
+
+/// Signalling access to a spawned child that is safe against pid reuse: the
+/// waiter thread reaps only while holding `reaped`'s lock, and signals are
+/// sent only under the same lock while it is still `false`.
+#[derive(Debug)]
+struct ChildHandle {
+    pid: i32,
+    reaped: Mutex<bool>,
+}
+
+impl ChildHandle {
+    /// Sends `signal` to process group `pgid` if our child is still unreaped
+    /// (so the group cannot have been recycled).
+    fn signal_group(&self, pgid: i32, signal: rustix::process::Signal) {
+        let reaped = self.reaped.lock().unwrap_or_else(|e| e.into_inner());
+        if !*reaped && let Some(pgid) = rustix::process::Pid::from_raw(pgid) {
+            let _ = rustix::process::kill_process_group(pgid, signal);
+        }
+    }
+}
+
+/// How long a closed session's processes get to exit after `SIGHUP` before
+/// they are killed.
+const CLOSE_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 struct State {
@@ -61,7 +89,8 @@ struct State {
     /// Bytes waiting to be written to the pty.
     outbox: VecDeque<u8>,
     exit: Option<ExitStatus>,
-    /// The pty reported EOF/EIO: no process holds the slave open any more.
+    /// The pty reported EOF/EIO (no process holds the slave open any more)
+    /// or the engine failed; the I/O loop stops polling this session.
     eof: bool,
     title: Option<String>,
 }
@@ -77,7 +106,7 @@ impl Session {
 
     /// The child's pid, or `None` for an attached session.
     pub fn pid(&self) -> Option<i32> {
-        self.pid
+        self.child.as_ref().map(|c| c.pid)
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -179,28 +208,62 @@ impl Session {
         self.lock().exit
     }
 
-    /// Hangs up the child's process group (like closing a terminal window).
+    /// Hangs up the session like closing a terminal window: `SIGHUP` to the
+    /// shell's group and the terminal's foreground job (e.g. vim in its own
+    /// group), then `SIGKILL` to both if they are still around after
+    /// [`CLOSE_GRACE`]. The pty itself closes when the last handle to the
+    /// session is dropped, which also makes the kernel hang up the terminal.
     fn hang_up(&self) {
-        let st = self.lock();
-        // The waiter reaps under this lock, so the pid can't be reused while
-        // we hold it and `exit` is still `None`.
-        if let (Some(pid), None) = (self.pid, st.exit) {
-            // The child is a session leader, so its pid is also its pgid.
-            if let Some(pgid) = rustix::process::Pid::from_raw(pid) {
-                let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::HUP);
-            }
+        use rustix::process::Signal;
+        let Some(child) = self.child.clone() else {
+            return;
+        };
+        // The child is a session leader, so its pid is also its pgid.
+        let shell_pgid = child.pid;
+        let foreground = rustix::termios::tcgetpgrp(&self.master)
+            .ok()
+            .map(|p| p.as_raw_nonzero().get());
+        let groups: Vec<i32> = std::iter::once(shell_pgid)
+            .chain(foreground.filter(|&g| g != shell_pgid))
+            .collect();
+        for &g in &groups {
+            child.signal_group(g, Signal::HUP);
+        }
+        let killer = std::thread::Builder::new()
+            .name(format!("ferrux-kill-{}", self.id))
+            .spawn(move || {
+                std::thread::sleep(CLOSE_GRACE);
+                for &g in &groups {
+                    child.signal_group(g, Signal::KILL);
+                }
+            });
+        if let Err(e) = killer {
+            log::warn!("session {}: cannot start kill timer: {e}", self.id);
         }
     }
 
-    /// Reads available output. Returns `false` once the pty hit EOF.
-    fn pump_input(&self, buf: &mut [u8]) -> bool {
+    /// Reads available output. Returns how many bytes were consumed and
+    /// whether the session just reached EOF (or failed).
+    fn pump_input(&self, buf: &mut [u8]) -> (usize, bool) {
         let mut total = 0;
         loop {
             match (&self.master).read(buf) {
-                Ok(0) => return self.mark_eof(),
+                Ok(0) => return (total, self.mark_eof()),
                 Ok(n) => {
                     let mut st = self.lock();
-                    st.terminal.feed(&buf[..n]);
+                    let fed = catch_unwind(AssertUnwindSafe(|| st.terminal.feed(&buf[..n])));
+                    if let Err(panic) = fed {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "terminal engine panicked".into());
+                        log::error!("session {}: {msg}", self.id);
+                        st.events.push_back(SessionEvent::Failed(msg));
+                        st.eof = true;
+                        st.outbox.clear();
+                        return (total + n, true);
+                    }
                     let responses = st.terminal.take_responses();
                     st.outbox.extend(responses);
                     for ev in st.terminal.drain_events() {
@@ -217,20 +280,23 @@ impl Session {
                     total += n;
                     // Yield to other sessions after a burst.
                     if total >= 1 << 20 {
-                        return true;
+                        return (total, false);
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return (total, false),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // EIO: every slave fd closed.
-                Err(_) => return self.mark_eof(),
+                Err(_) => return (total, self.mark_eof()),
             }
         }
     }
 
+    /// Marks EOF; returns `true`. Pending input can never be delivered now.
     fn mark_eof(&self) -> bool {
-        self.lock().eof = true;
-        false
+        let mut st = self.lock();
+        st.eof = true;
+        st.outbox.clear();
+        true
     }
 
     /// Writes queued input until the pty would block.
@@ -262,6 +328,8 @@ struct Shared {
     seq_cv: Condvar,
     wake_write: OwnedFd,
     shutdown: AtomicBool,
+    /// Number of `poll` returns, for tests that check the loop goes idle.
+    io_wakeups: AtomicU64,
 }
 
 impl Shared {
@@ -300,6 +368,7 @@ impl SessionManager {
             seq_cv: Condvar::new(),
             wake_write,
             shutdown: AtomicBool::new(false),
+            io_wakeups: AtomicU64::new(0),
         });
         let io_shared = shared.clone();
         let io_thread = std::thread::Builder::new()
@@ -316,15 +385,29 @@ impl SessionManager {
     pub fn spawn(&self, spawn: &SpawnConfig, term: TermConfig) -> Result<Arc<Session>, SpawnError> {
         let (master, child) = ferrux_pty::spawn(spawn)?;
         let size = TermSize::new(spawn.size.rows, spawn.size.cols);
-        let session = self
-            .register(master, Some(child.pid()), size, term)
-            .map_err(SpawnError::Pty)?;
-        let waiter_session = session.clone();
+        let handle = Arc::new(ChildHandle {
+            pid: child.pid(),
+            reaped: Mutex::new(false),
+        });
+        let session = match self.register(master, Some(handle.clone()), size, term) {
+            Ok(s) => s,
+            Err(e) => {
+                // Don't leave an orphan behind.
+                let _ = child.signal_group(libc_sigkill());
+                let _ = child.wait();
+                return Err(SpawnError::Pty(e));
+            }
+        };
+        // The waiter only holds a weak reference, so closing the session
+        // drops the pty master even while the child is still exiting.
+        let weak = Arc::downgrade(&session);
+        let shared = self.shared.clone();
+        let id = session.id;
         let spawned = std::thread::Builder::new()
-            .name(format!("ferrux-wait-{}", session.id))
-            .spawn(move || wait_child(&waiter_session, &child));
+            .name(format!("ferrux-wait-{id}"))
+            .spawn(move || wait_child(id, &child, &handle, &weak, &shared));
         if let Err(e) = spawned {
-            log::error!("session {}: cannot start waiter thread: {e}", session.id);
+            log::error!("session {id}: cannot start waiter thread: {e}");
         }
         Ok(session)
     }
@@ -343,7 +426,7 @@ impl SessionManager {
     fn register(
         &self,
         master: PtyMaster,
-        pid: Option<i32>,
+        child: Option<Arc<ChildHandle>>,
         size: TermSize,
         term: TermConfig,
     ) -> io::Result<Arc<Session>> {
@@ -352,7 +435,7 @@ impl SessionManager {
         let session = Arc::new(Session {
             id,
             master,
-            pid,
+            child,
             state: Mutex::new(State {
                 terminal: Terminal::new(size, term),
                 events: VecDeque::new(),
@@ -392,6 +475,12 @@ impl SessionManager {
         removed.is_some()
     }
 
+    /// How many times the I/O thread woke from `poll` (diagnostics/tests).
+    #[doc(hidden)]
+    pub fn io_wakeups(&self) -> u64 {
+        self.shared.io_wakeups.load(Ordering::Relaxed)
+    }
+
     /// Current value of the global change counter.
     pub fn change_seq(&self) -> u64 {
         *self.shared.seq.lock().unwrap_or_else(|e| e.into_inner())
@@ -423,39 +512,61 @@ impl Drop for SessionManager {
     }
 }
 
-/// Waits for the child without reaping, then reaps under the session lock.
-fn wait_child(session: &Session, child: &Child) {
+fn libc_sigkill() -> i32 {
+    rustix::process::Signal::KILL.as_raw()
+}
+
+/// Waits for the child without reaping, then reaps it under the handle lock
+/// and reports the exit to the session if it still exists.
+fn wait_child(
+    id: SessionId,
+    child: &Child,
+    handle: &ChildHandle,
+    session: &Weak<Session>,
+    shared: &Shared,
+) {
     if let Err(e) = child.wait_exited() {
-        log::error!("session {}: waitid failed: {e}", session.id);
+        log::error!("session {id}: waitid failed: {e}");
         return;
     }
-    let mut st = session.lock();
-    match child.try_wait() {
+    let status = {
+        let mut reaped = handle.reaped.lock().unwrap_or_else(|e| e.into_inner());
+        let status = child.try_wait();
+        *reaped = true;
+        status
+    };
+    match status {
         Ok(Some(status)) => {
-            st.exit = Some(status);
-            st.events.push_back(SessionEvent::Exited(status));
+            if let Some(session) = session.upgrade() {
+                let mut st = session.lock();
+                st.exit = Some(status);
+                st.events.push_back(SessionEvent::Exited(status));
+            }
         }
-        Ok(None) => log::error!("session {}: child not reapable after waitid", session.id),
-        Err(e) => log::error!("session {}: waitpid failed: {e}", session.id),
+        Ok(None) => log::error!("session {id}: child not reapable after waitid"),
+        Err(e) => log::error!("session {id}: waitpid failed: {e}"),
     }
-    drop(st);
-    session.shared.changed();
+    shared.changed();
 }
 
 fn io_loop(shared: &Shared, wake_read: OwnedFd) {
     let mut buf = vec![0u8; 64 * 1024];
     while !shared.shutdown.load(Ordering::SeqCst) {
-        let sessions: Vec<Arc<Session>> = shared.sessions().values().cloned().collect();
+        // Sessions at EOF are left out entirely: a pty master whose slave is
+        // closed reports POLLHUP forever, which would spin this loop.
+        let sessions: Vec<Arc<Session>> = shared
+            .sessions()
+            .values()
+            .filter(|s| !s.lock().eof)
+            .cloned()
+            .collect();
 
         let mut fds = Vec::with_capacity(sessions.len() + 1);
         fds.push(PollFd::new(&wake_read, PollFlags::IN));
         let mut deadline: Option<Instant> = None;
         for s in &sessions {
             let st = s.lock();
-            let mut flags = PollFlags::empty();
-            if !st.eof {
-                flags |= PollFlags::IN;
-            }
+            let mut flags = PollFlags::IN;
             if !st.outbox.is_empty() {
                 flags |= PollFlags::OUT;
             }
@@ -474,7 +585,9 @@ fn io_loop(shared: &Shared, wake_read: OwnedFd) {
             }
         });
         match rustix::event::poll(&mut fds, timeout.as_ref()) {
-            Ok(_) => {}
+            Ok(_) => {
+                shared.io_wakeups.fetch_add(1, Ordering::Relaxed);
+            }
             Err(rustix::io::Errno::INTR) => continue,
             Err(e) => {
                 log::error!("poll failed: {e}");
@@ -495,15 +608,22 @@ fn io_loop(shared: &Shared, wake_read: OwnedFd) {
                 s.flush_output();
             }
             if rev.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-                s.pump_input(&mut buf);
+                let (read, eof) = s.pump_input(&mut buf);
                 // Output may have produced responses (DSR etc.).
                 s.flush_output();
-                any_change = true;
+                any_change |= read > 0 || eof;
             }
         }
         if deadline.is_some_and(|d| d <= Instant::now()) {
             for s in &sessions {
-                s.lock().terminal.flush_sync_if_expired();
+                let mut st = s.lock();
+                let flushed =
+                    catch_unwind(AssertUnwindSafe(|| st.terminal.flush_sync_if_expired()));
+                if flushed.is_err() {
+                    st.events
+                        .push_back(SessionEvent::Failed("terminal engine panicked".into()));
+                    st.eof = true;
+                }
             }
             any_change = true;
         }

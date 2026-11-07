@@ -60,16 +60,32 @@ pub struct Palette {
     pub cursor: Rgb,
 }
 
+/// The default theme, "Ferrux Night": a dark, low-glare palette tuned for
+/// small text on phone screens. Documented in the README; keep them in sync.
+///
+/// | Index | Name    | Normal    | Bright    |
+/// |-------|---------|-----------|-----------|
+/// | 0 / 8 | black   | `#1C2029` | `#4E5666` |
+/// | 1 / 9 | red     | `#F0717A` | `#FF8E96` |
+/// | 2 /10 | green   | `#9BD68A` | `#B6EBA3` |
+/// | 3 /11 | yellow  | `#EBC47A` | `#F7D99B` |
+/// | 4 /12 | blue    | `#6CB4F5` | `#92CBFF` |
+/// | 5 /13 | magenta | `#C79BF2` | `#DDB8FF` |
+/// | 6 /14 | cyan    | `#5FD1C9` | `#8CE6DF` |
+/// | 7 /15 | white   | `#C9D1DC` | `#F2F5F9` |
+///
+/// Foreground `#D6DCE5`, background `#0E1116`, cursor `#F29E4C`.
+pub const FERRUX_NIGHT_ANSI: [u32; 16] = [
+    0x1c2029, 0xf0717a, 0x9bd68a, 0xebc47a, 0x6cb4f5, 0xc79bf2, 0x5fd1c9, 0xc9d1dc, //
+    0x4e5666, 0xff8e96, 0xb6eba3, 0xf7d99b, 0x92cbff, 0xddb8ff, 0x8ce6df, 0xf2f5f9,
+];
+
 impl Default for Palette {
-    /// A dark theme. The 16 ANSI colors are Ferrux's own picks; entries
-    /// 16..256 are the standard xterm 6×6×6 cube and grayscale ramp.
+    /// [`FERRUX_NIGHT_ANSI`] plus the standard xterm 6×6×6 cube and grayscale
+    /// ramp for entries 16..256.
     fn default() -> Self {
-        const ANSI: [u32; 16] = [
-            0x1c1f24, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xc8ccd4,
-            0x5c6370, 0xff7b86, 0xb5e890, 0xffd68a, 0x80c4ff, 0xde9bf0, 0x7fd6e0, 0xffffff,
-        ];
         let mut indexed = [Rgb::default(); 256];
-        for (i, c) in ANSI.iter().enumerate() {
+        for (i, c) in FERRUX_NIGHT_ANSI.iter().enumerate() {
             indexed[i] = Rgb::from_u32(*c);
         }
         let level = |v: usize| if v == 0 { 0 } else { (55 + v * 40) as u8 };
@@ -82,9 +98,9 @@ impl Default for Palette {
         }
         Self {
             indexed,
-            foreground: Rgb::from_u32(0xd7dae0),
-            background: Rgb::from_u32(0x101216),
-            cursor: Rgb::from_u32(0xf0a03c),
+            foreground: Rgb::from_u32(0xd6dce5),
+            background: Rgb::from_u32(0x0e1116),
+            cursor: Rgb::from_u32(0xf29e4c),
         }
     }
 }

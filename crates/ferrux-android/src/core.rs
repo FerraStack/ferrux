@@ -151,6 +151,12 @@ pub fn snapshot(id: i64, capacity: usize, sink: impl FnOnce(&[i32])) -> i32 {
     })
 }
 
+/// The visible screen as text (rows joined by `\n`), for accessibility and
+/// debugging.
+pub fn screen_text(id: i64) -> Option<String> {
+    Some(session(id)?.snapshot().text())
+}
+
 pub fn await_change(last: i64, timeout_ms: i32) -> i64 {
     let timeout = Duration::from_millis(timeout_ms.max(0) as u64);
     manager().wait_change(last as u64, timeout) as i64
@@ -168,6 +174,7 @@ fn encode_event(event: SessionEvent) -> String {
         SessionEvent::Bell => "B".into(),
         SessionEvent::ClipboardStore(text) => format!("C{text}"),
         SessionEvent::Exited(status) => format!("X{}", status.code()),
+        SessionEvent::Failed(msg) => format!("E{msg}"),
     }
 }
 
@@ -196,17 +203,21 @@ mod tests {
         let mut ints = Vec::new();
         loop {
             assert!(start.elapsed() < Duration::from_secs(10), "no output");
-            assert_eq!(snapshot(id, 3, |_| unreachable!()), -(8 + 5 * 20 * 4));
+            assert_eq!(snapshot(id, 3, |_| unreachable!()), -(8 + 5 * 20 * 4 + 1));
             let n = snapshot(id, 1000, |data| ints = data.to_vec());
-            assert_eq!(n, 408);
+            assert_eq!(n, 409);
             if ints[8] == 'h' as i32 {
                 break;
             }
             seq = await_change(seq, 100);
         }
         assert_eq!(&ints[..2], &[5, 20]);
+        assert_eq!(screen_text(id).as_deref(), Some("hi"));
         resize(id, 6, 30);
-        assert_eq!(snapshot(id, 1000, |d| ints = d.to_vec()), 8 + 6 * 30 * 4);
+        assert_eq!(
+            snapshot(id, 1000, |d| ints = d.to_vec()),
+            8 + 6 * 30 * 4 + 1
+        );
         assert!(send_key(id, Key::Enter.code() as i32, 0));
         assert!(!send_key(id, 999, 0));
 
@@ -222,6 +233,7 @@ mod tests {
         assert_eq!(events, vec!["Tt".to_string(), "X4".to_string()]);
         destroy_session(id);
         assert!(poll_events(id).is_none());
+        assert!(screen_text(id).is_none());
         assert_eq!(snapshot(id, 1000, |_| {}), 0);
     }
 

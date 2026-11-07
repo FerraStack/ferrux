@@ -26,6 +26,9 @@ impl CellFlags {
     pub const HIDDEN: Self = Self(1 << 7);
     pub const DOUBLE_UNDERLINE: Self = Self(1 << 8);
     pub const UNDERCURL: Self = Self(1 << 9);
+    /// Zero-width characters (combining marks, ZWJ, variation selectors)
+    /// follow the base character; see [`Snapshot::combining`].
+    pub const COMBINING: Self = Self(1 << 10);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -131,9 +134,32 @@ pub struct Snapshot {
     pub default_fg: Rgb,
     pub default_bg: Rgb,
     pub modes: Modes,
+    /// Zero-width characters attached to cells flagged
+    /// [`CellFlags::COMBINING`], sorted by cell index.
+    pub combining: Vec<Combining>,
+}
+
+/// Zero-width characters that render together with a cell's base character.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Combining {
+    /// Row-major index into [`Snapshot::cells`].
+    pub cell: usize,
+    pub chars: Vec<char>,
 }
 
 impl Snapshot {
+    /// The zero-width characters attached to a cell, if any.
+    pub fn combining_at(&self, row: usize, col: usize) -> &[char] {
+        let index = row * self.cols + col;
+        if !self.cells[index].flags.contains(CellFlags::COMBINING) {
+            return &[];
+        }
+        self.combining
+            .binary_search_by_key(&index, |c| c.cell)
+            .map(|i| self.combining[i].chars.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// The cell at `(row, col)`.
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
         &self.cells[row * self.cols + col]
@@ -146,12 +172,14 @@ impl Snapshot {
 
     /// The text of one row, without wide-char spacers or trailing blanks.
     pub fn row_text(&self, row: usize) -> String {
-        let text: String = self
-            .row(row)
-            .iter()
-            .filter(|c| !c.flags.contains(CellFlags::WIDE_SPACER))
-            .map(|c| c.ch)
-            .collect();
+        let mut text = String::with_capacity(self.cols);
+        for (col, cell) in self.row(row).iter().enumerate() {
+            if cell.flags.contains(CellFlags::WIDE_SPACER) {
+                continue;
+            }
+            text.push(cell.ch);
+            text.extend(self.combining_at(row, col));
+        }
         text.trim_end().to_owned()
     }
 
@@ -166,7 +194,8 @@ impl Snapshot {
 
     /// Number of `i32`s [`Snapshot::encode_ints`] writes.
     pub fn encoded_len(&self) -> usize {
-        Self::HEADER_LEN + self.cells.len() * Self::INTS_PER_CELL
+        let extras: usize = self.combining.iter().map(|c| 2 + c.chars.len()).sum();
+        Self::HEADER_LEN + self.cells.len() * Self::INTS_PER_CELL + 1 + extras
     }
 
     /// Length of the header in the integer encoding.
@@ -179,8 +208,9 @@ impl Snapshot {
     /// Header: `rows, cols, cursor_row, cursor_col, cursor_shape,
     /// display_offset, default_bg_argb, mode_bits`, followed by
     /// `codepoint, fg_argb, bg_argb, flags` per cell (row-major). Blank cells
-    /// have codepoint 0. Returns `None` if `out` is shorter than
-    /// [`Snapshot::encoded_len`].
+    /// have codepoint 0. Then the combining table: `count`, followed by
+    /// `count` entries of `cell_index, n, codepoint × n`.
+    /// Returns `None` if `out` is shorter than [`Snapshot::encoded_len`].
     pub fn encode_ints(&self, out: &mut [i32]) -> Option<usize> {
         let len = self.encoded_len();
         let out = out.get_mut(..len)?;
@@ -198,13 +228,27 @@ impl Snapshot {
         for (dst, src) in head.iter_mut().zip(header) {
             *dst = src as i32;
         }
-        let (chunks, _) = body.as_chunks_mut::<{ Self::INTS_PER_CELL }>();
+        let (cells_out, tail) = body.split_at_mut(self.cells.len() * Self::INTS_PER_CELL);
+        let (chunks, _) = cells_out.as_chunks_mut::<{ Self::INTS_PER_CELL }>();
         for (dst, cell) in chunks.iter_mut().zip(&self.cells) {
             let cp = if cell.ch == ' ' { 0 } else { cell.ch as u32 };
             dst[0] = cp as i32;
             dst[1] = cell.fg.to_argb() as i32;
             dst[2] = cell.bg.to_argb() as i32;
             dst[3] = cell.flags.bits() as i32;
+        }
+        let mut i = 0;
+        let mut push = |v: u32| {
+            tail[i] = v as i32;
+            i += 1;
+        };
+        push(self.combining.len() as u32);
+        for c in &self.combining {
+            push(c.cell as u32);
+            push(c.chars.len() as u32);
+            for &ch in &c.chars {
+                push(ch as u32);
+            }
         }
         Some(len)
     }

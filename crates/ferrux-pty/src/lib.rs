@@ -391,6 +391,7 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
     let (err_read, err_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
         .map_err(|e| SpawnError::Pty(e.into()))?;
     let max_fd = max_fd();
+    let use_close_range = close_range_allowed();
 
     // SAFETY: fork() in a multi-threaded process is sound as long as the child
     // only calls async-signal-safe functions until execve. `child_main` obeys
@@ -401,7 +402,7 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
     }
     if pid == 0 {
         // SAFETY: we are the freshly forked child.
-        unsafe { child_main(&prepared, err_write.as_raw_fd(), max_fd) }
+        unsafe { child_main(&prepared, err_write.as_raw_fd(), max_fd, use_close_range) }
     }
     drop(err_write);
 
@@ -431,6 +432,40 @@ fn open_master(size: WinSize) -> io::Result<OwnedFd> {
     termios::tcsetattr(&master, OptionalActions::Now, &t)?;
     termios::tcsetwinsize(&master, size.to_winsize())?;
     Ok(master)
+}
+
+/// Whether the child may call `close_range(2)`.
+///
+/// Android's app seccomp filter only allows `close_range` from API 34; on
+/// older releases it raises `SIGSYS` (killing the child) instead of failing
+/// with `ENOSYS`, so a runtime fallback is impossible there.
+fn close_range_allowed() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        android_api_level() >= 34
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
+/// `ro.build.version.sdk`, or 0 if unreadable.
+#[cfg(target_os = "android")]
+pub fn android_api_level() -> i32 {
+    let mut value = [0 as libc::c_char; 92]; // PROP_VALUE_MAX
+    // SAFETY: the name is NUL-terminated and the buffer has PROP_VALUE_MAX bytes.
+    let len = unsafe {
+        libc::__system_property_get(c"ro.build.version.sdk".as_ptr(), value.as_mut_ptr())
+    };
+    if len <= 0 {
+        return 0;
+    }
+    let bytes: Vec<u8> = value[..len as usize].iter().map(|&c| c as u8).collect();
+    std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// The highest fd number the child might have inherited.
@@ -533,7 +568,7 @@ impl Prepared {
 ///
 /// # Safety
 /// Must only be called in the child right after `fork()`.
-unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int) -> ! {
+unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int, use_close_range: bool) -> ! {
     // SAFETY (whole body): only async-signal-safe libc calls on pointers that
     // were prepared before fork and stay valid in the child's copy of memory.
     unsafe {
@@ -598,12 +633,16 @@ unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int) -> ! {
             if lo > hi {
                 return;
             }
-            let r = libc::syscall(
-                libc::SYS_close_range,
-                lo as libc::c_uint,
-                hi as libc::c_uint,
-                0 as libc::c_uint,
-            );
+            let r = if use_close_range {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    lo as libc::c_uint,
+                    hi as libc::c_uint,
+                    0 as libc::c_uint,
+                )
+            } else {
+                -1
+            };
             if r != 0 {
                 for fd in lo..=hi.min(max_fd) {
                     libc::syscall(libc::SYS_close, fd);
