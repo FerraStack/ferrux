@@ -46,7 +46,24 @@ are tested on Linux. The renderer is a Kotlin `Canvas` for now; the wgpu rendere
 The app opens straight into a shell, with the terminal edge to edge. The extra-keys
 row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
 key; a double tap locks it. The arrow and page keys repeat while held. To open the
-session drawer, swipe from the left edge or tap ☰. Long-press the terminal to paste.
+session drawer, swipe from the left edge or tap ☰.
+
+Selecting text works like in a text field:
+
+- Long-press a word to select it, then keep dragging to extend the selection word by word.
+  URLs and `path/file.rs:10:5` count as one word.
+- Double-tap selects a word and triple-tap selects the line, following soft wraps.
+- Drag either handle to adjust the selection. Dragging past the top or bottom edge scrolls.
+- The floating toolbar offers Copy, Open link, Paste, Select all and Share. Open link
+  appears for OSC 8 hyperlinks and for a selected URL, and it opens only `http(s)`,
+  `mailto` and similar schemes.
+- A copied line never includes its trailing newline, so pasting it into a shell doesn't
+  run it.
+- Long-press blank space to Paste or Select all. On a hardware keyboard, Ctrl+Shift+C
+  copies and Ctrl+Shift+V pastes.
+- Tap or press Back to end the selection.
+
+OSC 8 hyperlinks get a faint underline.
 
 The bundled font is [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) 2.304
 under the SIL Open Font License 1.1, in
@@ -66,7 +83,7 @@ The default palette is **Ferrux Night**:
 | 6 / 14| cyan    | `#5FD1C9` | `#8CE6DF` |
 | 7 / 15| white   | `#C9D1DC` | `#F2F5F9` |
 
-- Foreground is `#D6DCE5`, background `#0E1116` and cursor `#F29E4C`.
+- Foreground is `#D6DCE5`, background `#0E1116`, cursor `#F29E4C` and selection `#264166`.
 - Entries 16–255 are the standard xterm colour cube and grayscale ramp.
 - Source: `crates/ferrux-term/src/color.rs`.
 
@@ -117,10 +134,11 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 
 - **rust**: fmt, clippy and tests.
 - **android**: builds with cargo-ndk, checks 16 KB ELF alignment, runs `assembleDebug`
-  and uploads the APK.
+  and the JVM unit tests, and uploads the APK.
 - **emulator** (pull requests and manual runs only) runs on two emulators:
   - **API 35 (Pixel 6):** launch, `echo`, `ls` and a colour test, the soft keyboard,
-    two sessions in the drawer, and CTRL.
+    two sessions in the drawer, CTRL, and text selection: long press, double and
+    triple tap, handle drag, Copy, Select all, Paste and OSC 8 hyperlinks.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

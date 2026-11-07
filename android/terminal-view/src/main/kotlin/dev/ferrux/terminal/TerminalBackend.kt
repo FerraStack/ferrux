@@ -7,6 +7,7 @@ package dev.ferrux.terminal
  * or later a remote session (e.g. Ferride rendering a PTY owned by Ferrux).
  *
  * Implementations must be callable from the UI thread without blocking for long.
+ * Selection support is optional: the defaults make a backend read-only.
  */
 interface TerminalBackend {
     /** See [FerruxNative.snapshot] for the contract and [SnapshotLayout] for the format. */
@@ -23,6 +24,20 @@ interface TerminalBackend {
     fun resize(rows: Int, cols: Int)
 
     fun scroll(lines: Int)
+
+    /** See [FerruxNative.startSelection]. */
+    fun startSelection(kind: Int, row: Int, col: Int): Boolean = false
+
+    fun updateSelection(row: Int, col: Int) = Unit
+
+    fun setSelection(startRow: Int, startCol: Int, endRow: Int, endCol: Int) = Unit
+
+    fun selectAll() = Unit
+
+    fun clearSelection() = Unit
+
+    /** See [FerruxNative.selectionText]. */
+    fun selectionText(): String? = null
 }
 
 /** [TerminalBackend] backed by a session in `libferrux.so`. */
@@ -40,6 +55,20 @@ class NativeSessionBackend(val sessionId: Long) : TerminalBackend {
     override fun resize(rows: Int, cols: Int) = FerruxNative.resize(sessionId, rows, cols)
 
     override fun scroll(lines: Int) = FerruxNative.scroll(sessionId, lines)
+
+    override fun startSelection(kind: Int, row: Int, col: Int): Boolean =
+        FerruxNative.startSelection(sessionId, kind, row, col)
+
+    override fun updateSelection(row: Int, col: Int) = FerruxNative.updateSelection(sessionId, row, col)
+
+    override fun setSelection(startRow: Int, startCol: Int, endRow: Int, endCol: Int) =
+        FerruxNative.setSelection(sessionId, startRow, startCol, endRow, endCol, false)
+
+    override fun selectAll() = FerruxNative.selectAll(sessionId)
+
+    override fun clearSelection() = FerruxNative.clearSelection(sessionId)
+
+    override fun selectionText(): String? = FerruxNative.selectionText(sessionId)
 }
 
 /**

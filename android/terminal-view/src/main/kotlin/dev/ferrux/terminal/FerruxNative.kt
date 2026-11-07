@@ -75,6 +75,37 @@ object FerruxNative {
      */
     @JvmStatic external fun snapshot(id: Long, out: IntArray): Int
 
+    /**
+     * Starts a selection at a viewport cell. [kind] is a [SelectionKind]: WORD and
+     * LINE immediately cover the word or line there. Returns false for an unknown
+     * session or kind. Selection calls don't wake [awaitChange]; redraw yourself.
+     */
+    @JvmStatic external fun startSelection(id: Long, kind: Int, row: Int, col: Int): Boolean
+
+    /** Moves the free end of the selection; word/line selections keep whole words/lines. */
+    @JvmStatic external fun updateSelection(id: Long, row: Int, col: Int)
+
+    /** Selects the cells from start to end (inclusive, either order); rows may be off-screen. */
+    @JvmStatic external fun setSelection(
+        id: Long,
+        startRow: Int,
+        startCol: Int,
+        endRow: Int,
+        endCol: Int,
+        block: Boolean,
+    )
+
+    /** Selects the whole scrollback and screen. */
+    @JvmStatic external fun selectAll(id: Long)
+
+    @JvmStatic external fun clearSelection(id: Long)
+
+    /**
+     * The selected text (soft wraps rejoined, trailing whitespace dropped), or null
+     * when nothing but blanks is selected.
+     */
+    @JvmStatic external fun selectionText(id: Long): String?
+
     /** The visible screen as text (rows joined by `\n`), or null if there is no such session. */
     @JvmStatic external fun screenText(id: Long): String?
 

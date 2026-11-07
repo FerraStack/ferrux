@@ -149,6 +149,7 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                                 it.stickyModifiers = sticky
                                 it.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
                                 terminalView = it
+                                ActiveTerminal.view = java.lang.ref.WeakReference(it)
                             }
                         },
                         update = { view ->
@@ -255,6 +256,15 @@ private fun SessionDrawer(
             modifier = Modifier.padding(horizontal = 12.dp),
         )
     }
+}
+
+/**
+ * The terminal view currently on screen (weakly held), for debug tooling such as the
+ * CI `DebugReceiver`, which reads its selection state.
+ */
+internal object ActiveTerminal {
+    @Volatile
+    var view: java.lang.ref.WeakReference<TerminalView>? = null
 }
 
 /** Shown when libferrux.so is missing (APK built with -Pferrux.skipCargo=true). */

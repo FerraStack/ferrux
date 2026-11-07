@@ -7,6 +7,7 @@
 //! VT engine behind it.
 
 use crate::color::Rgb;
+use crate::selection::SelectionSpan;
 
 /// Per-cell attribute bits. The values are part of the FFI contract with the
 /// Kotlin `SnapshotLayout` object.
@@ -32,6 +33,10 @@ impl CellFlags {
     /// Set on the last cell of a row whose text continues on the next row
     /// (soft wrap), so copy/accessibility can rejoin long lines.
     pub const WRAPPED: Self = Self(1 << 11);
+    /// Part of the selection; `bg` is already the selection color.
+    pub const SELECTED: Self = Self(1 << 12);
+    /// Part of an OSC 8 hyperlink; see [`Snapshot::links`].
+    pub const HYPERLINK: Self = Self(1 << 13);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -140,6 +145,23 @@ pub struct Snapshot {
     /// Zero-width characters attached to cells flagged
     /// [`CellFlags::COMBINING`], sorted by cell index.
     pub combining: Vec<Combining>,
+    /// The selection, in viewport coordinates. Its ends may lie outside the
+    /// viewport when the selected text is scrolled out of view.
+    pub selection: Option<SelectionSpan>,
+    /// OSC 8 hyperlinks on screen, sorted by cell index. Their cells are
+    /// flagged [`CellFlags::HYPERLINK`].
+    pub links: Vec<Link>,
+}
+
+/// A run of consecutive cells (row-major, possibly across rows) that belong
+/// to the same OSC 8 hyperlink.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// First cell, a row-major index into [`Snapshot::cells`].
+    pub start: usize,
+    /// One past the last cell.
+    pub end: usize,
+    pub uri: String,
 }
 
 /// Zero-width characters that render together with a cell's base character.
@@ -161,6 +183,16 @@ impl Snapshot {
             .binary_search_by_key(&index, |c| c.cell)
             .map(|i| self.combining[i].chars.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// The hyperlink covering the cell at `(row, col)`, if any.
+    pub fn link_at(&self, row: usize, col: usize) -> Option<&Link> {
+        let index = row * self.cols + col;
+        if !self.cells.get(index)?.flags.contains(CellFlags::HYPERLINK) {
+            return None;
+        }
+        let i = self.links.partition_point(|l| l.end <= index);
+        self.links.get(i).filter(|l| l.start <= index)
     }
 
     /// The cell at `(row, col)`.
@@ -186,7 +218,6 @@ impl Snapshot {
         text.trim_end().to_owned()
     }
 
-    /// All rows joined by `\n`, with trailing blank rows removed.
     /// Whether `row` soft-wraps into the next row.
     pub fn row_wraps(&self, row: usize) -> bool {
         self.cols > 0
@@ -221,9 +252,19 @@ impl Snapshot {
 
     /// Number of `i32`s [`Snapshot::encode_ints`] writes.
     pub fn encoded_len(&self) -> usize {
-        let extras: usize = self.combining.iter().map(|c| 2 + c.chars.len()).sum();
-        Self::HEADER_LEN + self.cells.len() * Self::INTS_PER_CELL + 1 + extras
+        let combining: usize = self.combining.iter().map(|c| 2 + c.chars.len()).sum();
+        let links: usize = self.links.iter().map(|l| 3 + l.uri.chars().count()).sum();
+        Self::HEADER_LEN
+            + self.cells.len() * Self::INTS_PER_CELL
+            + 1
+            + combining
+            + Self::SELECTION_LEN
+            + 1
+            + links
     }
+
+    /// Number of `i32`s in the selection record of the integer encoding.
+    pub const SELECTION_LEN: usize = 5;
 
     /// Length of the header in the integer encoding.
     pub const HEADER_LEN: usize = 8;
@@ -235,8 +276,18 @@ impl Snapshot {
     /// Header: `rows, cols, cursor_row, cursor_col, cursor_shape,
     /// display_offset, default_bg_argb, mode_bits`, followed by
     /// `codepoint, fg_argb, bg_argb, flags` per cell (row-major). Blank cells
-    /// have codepoint 0. Then the combining table: `count`, followed by
-    /// `count` entries of `cell_index, n, codepoint × n`.
+    /// have codepoint 0. Then three variable-length sections:
+    ///
+    /// 1. Combining table: `count`, followed by `count` entries of
+    ///    `cell_index, n, codepoint × n`.
+    /// 2. Selection: `kind, start_row, start_col, end_row, end_col` where kind
+    ///    is 0 (none), 1 (running text) or 2 (block); rows are viewport rows
+    ///    and may be negative or `>= rows` (scrolled out of view); both ends
+    ///    are inclusive.
+    /// 3. Hyperlinks: `count`, followed by `count` entries of
+    ///    `start_cell, end_cell, n, codepoint × n` (the URI; `end_cell` is
+    ///    exclusive).
+    ///
     /// Returns `None` if `out` is shorter than [`Snapshot::encoded_len`].
     pub fn encode_ints(&self, out: &mut [i32]) -> Option<usize> {
         let len = self.encoded_len();
@@ -277,6 +328,26 @@ impl Snapshot {
                 push(ch as u32);
             }
         }
+        match self.selection {
+            Some(sel) => {
+                push(if sel.block { 2 } else { 1 });
+                push(sel.start.row as u32);
+                push(sel.start.col as u32);
+                push(sel.end.row as u32);
+                push(sel.end.col as u32);
+            }
+            None => (0..Self::SELECTION_LEN).for_each(|_| push(0)),
+        }
+        push(self.links.len() as u32);
+        for link in &self.links {
+            push(link.start as u32);
+            push(link.end as u32);
+            push(link.uri.chars().count() as u32);
+            for ch in link.uri.chars() {
+                push(ch as u32);
+            }
+        }
+        debug_assert_eq!(i, tail.len());
         Some(len)
     }
 }

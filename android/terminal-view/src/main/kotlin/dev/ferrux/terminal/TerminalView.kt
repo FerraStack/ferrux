@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.ferrux.terminal
 
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
@@ -23,6 +24,8 @@ import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -58,10 +61,15 @@ class TerminalView @JvmOverloads constructor(
         RAW(InputType.TYPE_NULL),
     }
 
+    /** Selection handles and the Copy/Paste action mode. */
+    internal val selection = TerminalSelection(this)
+
     /** The terminal being shown. Setting it resizes the backend to this view's grid. */
     var backend: TerminalBackend? = null
         set(value) {
             if (field === value) return
+            // A selection belongs to the session it was made in.
+            selection.finish(clear = true)
             field = value
             composing = ""
             lastResize = 0 to 0
@@ -136,6 +144,26 @@ class TerminalView @JvmOverloads constructor(
     private var snapshot = IntArray(L.requiredSize(24, 80))
     /** Cell index → base character plus its zero-width characters, for this frame. */
     private val combining = SparseArray<String>()
+    /** OSC 8 hyperlinks of this frame. */
+    private val links = ArrayList<L.Link>()
+
+    // Geometry of the last drawn frame, for hit testing and the selection UI.
+    internal var frameRows = 0
+        private set
+    internal var frameCols = 0
+        private set
+    internal var frameDisplayOffset = 0
+        private set
+    internal val cellWidthPx: Float get() = cellWidth
+    internal val cellHeightPx: Float get() = cellHeight
+
+    private val tapCounter = TapCounter(
+        ViewConfiguration.getDoubleTapTimeout().toLong(),
+        ViewConfiguration.get(context).scaledDoubleTapSlop.toFloat(),
+    )
+
+    /** Shows the keyboard after a single tap, unless it turns into a double tap. */
+    private val showKeyboardRunnable = Runnable { showKeyboard() }
     private val charBuffer = CharArray(512)
     private var composing = ""
     private var lastResize = 0 to 0
@@ -157,27 +185,33 @@ class TerminalView @JvmOverloads constructor(
         override fun onDown(e: MotionEvent): Boolean = true
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            showKeyboard()
+            onTap(e)
             return true
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (!scaling) showPasteMenu(e.x, e.y)
+            if (!scaling) onLongPressAt(e.x, e.y)
         }
 
         override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-            if (scaling) return true
+            if (scaling || selection.isDraggingFromLongPress) return true
+            tapCounter.reset()
             // Finger moving down (dy < 0) reveals older output: scroll back.
             scrollRemainder -= dy
             val lines = (scrollRemainder / cellHeight).toInt()
             if (lines != 0) {
                 scrollRemainder -= lines * cellHeight
                 backend?.scroll(lines)
+                selection.onScrolled()
                 invalidate()
             }
             return true
         }
-    })
+    }).apply {
+        // Taps are counted by [tapCounter] (double tap = word, triple tap = line);
+        // the detector's own double-tap handling would swallow the second tap.
+        setOnDoubleTapListener(null)
+    }
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
@@ -217,6 +251,8 @@ class TerminalView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         removeCallbacks(blinkRunnable)
+        removeCallbacks(showKeyboardRunnable)
+        selection.onDetached()
         super.onDetachedFromWindow()
     }
 
@@ -243,6 +279,9 @@ class TerminalView @JvmOverloads constructor(
         requestFocus()
         inputMethodManager.showSoftInput(this, 0)
     }
+
+    private fun isKeyboardShown(): Boolean =
+        rootWindowInsets?.isVisible(WindowInsets.Type.ime()) == true
 
     // ---------------------------------------------------------------- layout
 
@@ -303,7 +342,12 @@ class TerminalView @JvmOverloads constructor(
         val defaultBg = s[L.H_DEFAULT_BG]
         canvas.drawColor(defaultBg)
         if (n < L.requiredSize(rows, cols)) return
+        frameRows = rows
+        frameCols = cols
+        frameDisplayOffset = s[L.H_DISPLAY_OFFSET]
         readCombining(rows, cols, n)
+        val selectionOffset = L.selectionOffset(s, rows, cols, n)
+        L.readLinks(s, if (selectionOffset < 0) -1 else selectionOffset + L.SELECTION_SIZE, n, links)
 
         canvas.save()
         canvas.translate(paddingLeft.toFloat(), paddingTop.toFloat())
@@ -313,6 +357,14 @@ class TerminalView @JvmOverloads constructor(
         }
         drawCursor(canvas, rows, cols)
         canvas.restore()
+        selection.onFrame(s, selectionOffset)
+    }
+
+    /** The OSC 8 hyperlink at a viewport cell of the last frame, if any. */
+    internal fun linkAt(row: Int, col: Int): String? {
+        if (row !in 0 until frameRows || col !in 0 until frameCols) return null
+        val cell = row * frameCols + col
+        return links.firstOrNull { cell in it }?.uri
     }
 
     private fun readCombining(rows: Int, cols: Int, n: Int) {
@@ -437,13 +489,19 @@ class TerminalView @JvmOverloads constructor(
     )
 
     private fun drawDecorations(canvas: Canvas, row: Int, start: Int, end: Int, flags: Int, fg: Int) {
-        val decorations = L.F_UNDERLINE or L.F_DOUBLE_UNDERLINE or L.F_UNDERCURL or L.F_STRIKEOUT
+        val decorations = L.F_UNDERLINE or L.F_DOUBLE_UNDERLINE or L.F_UNDERCURL or L.F_STRIKEOUT or L.F_HYPERLINK
         if (flags and decorations == 0) return
         linePaint.color = if (flags and L.F_DIM != 0) dim(fg) else fg
         val x0 = start * cellWidth
         val x1 = end * cellWidth
         val top = row * cellHeight
         val underlineY = top + baselineOffset + linePaint.strokeWidth * 1.5f
+        if (flags and (L.F_UNDERLINE or L.F_UNDERCURL or L.F_DOUBLE_UNDERLINE) == 0 && flags and L.F_HYPERLINK != 0) {
+            // Hyperlinks get a quieter underline than SGR 4, so styled links stay distinct.
+            linePaint.alpha = LINK_UNDERLINE_ALPHA
+            canvas.drawLine(x0, underlineY, x1, underlineY, linePaint)
+            linePaint.alpha = 0xFF
+        }
         // TODO(M4): draw undercurl as a wave instead of a plain underline.
         if (flags and (L.F_UNDERLINE or L.F_UNDERCURL or L.F_DOUBLE_UNDERLINE) != 0) {
             canvas.drawLine(x0, underlineY, x1, underlineY, linePaint)
@@ -533,8 +591,87 @@ class TerminalView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
         gestureDetector.onTouchEvent(event)
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) scrollRemainder = 0f
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> scrollRemainder = 0f
+            MotionEvent.ACTION_MOVE -> if (selection.isDraggingFromLongPress && !scaling) {
+                // Long press, then drag: extend the selection word by word.
+                selection.extendLongPress(rowAt(event.y), colAt(event.x))
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                if (selection.isDraggingFromLongPress) selection.endLongPress()
+        }
         return true
+    }
+
+    private fun rowAt(y: Float): Int =
+        ((y - paddingTop) / cellHeight).toInt().coerceIn(0, max(0, frameRows - 1))
+
+    private fun colAt(x: Float): Int =
+        ((x - paddingLeft) / cellWidth).toInt().coerceIn(0, max(0, frameCols - 1))
+
+    /** One, two or three taps: keyboard / select word / select line. */
+    private fun onTap(e: MotionEvent) {
+        removeCallbacks(showKeyboardRunnable)
+        when (tapCounter.onTap(e.eventTime, e.x, e.y)) {
+            1 -> when {
+                // A tap outside the toolbar ends selection mode, like in text fields.
+                selection.isActive -> selection.finish()
+                isKeyboardShown() -> showKeyboard()
+                // Wait out a possible double tap: showing the keyboard resizes the grid,
+                // which would move the text under the second tap.
+                else -> postDelayed(showKeyboardRunnable, ViewConfiguration.getDoubleTapTimeout().toLong())
+            }
+            2 -> selectAt(SelectionKind.WORD, e.x, e.y, fromLongPress = false)
+            else -> selectAt(SelectionKind.LINE, e.x, e.y, fromLongPress = false)
+        }
+    }
+
+    private fun onLongPressAt(x: Float, y: Float) {
+        tapCounter.reset()
+        removeCallbacks(showKeyboardRunnable)
+        if (!selectAt(SelectionKind.WORD, x, y, fromLongPress = true)) {
+            // Nothing but blanks under the finger: offer Paste on its own.
+            showPasteMenu(x, y)
+        }
+    }
+
+    /** Selects the word or line at a point; false if there is only blank space there. */
+    private fun selectAt(kind: Int, x: Float, y: Float, fromLongPress: Boolean): Boolean {
+        val b = backend ?: return false
+        if (frameRows == 0) return false
+        selection.finish(clear = false)
+        if (!b.startSelection(kind, rowAt(y), colAt(x)) || b.selectionText() == null) {
+            b.clearSelection()
+            invalidate()
+            return false
+        }
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        selection.start(fromLongPress)
+        return true
+    }
+
+    /** `key=value` diagnostics for tests: grid geometry and the selection UI state. */
+    fun debugState(): Map<String, String> {
+        val location = IntArray(2).also(::getLocationOnScreen)
+        val selected = backend?.selectionText().orEmpty()
+        return linkedMapOf(
+            "origin" to "${location[0] + paddingLeft},${location[1] + paddingTop}",
+            "cell" to "$cellWidth,$cellHeight",
+            "rows" to frameRows.toString(),
+            "cols" to frameCols.toString(),
+            "offset" to frameDisplayOffset.toString(),
+            "selection" to selected.replace("\\", "\\\\").replace("\n", "\\n"),
+            "links" to links.joinToString("|") { "${it.start}-${it.end}=${it.uri}" },
+        ) + selection.debugState()
+    }
+
+    override fun onKeyPreIme(keyCode: Int, event: KeyEvent): Boolean {
+        // Back leaves selection mode before it closes the keyboard or the app.
+        if (keyCode == KeyEvent.KEYCODE_BACK && selection.isActive) {
+            if (event.action == KeyEvent.ACTION_UP) selection.finish()
+            return true
+        }
+        return super.onKeyPreIme(keyCode, event)
     }
 
     // ---------------------------------------------------------------- IME
@@ -617,22 +754,42 @@ class TerminalView @JvmOverloads constructor(
         onUserInput()
     }
 
+    /** Copies the selection to the clipboard and leaves selection mode. */
+    fun copySelection() {
+        val text = backend?.selectionText()
+        if (text != null) {
+            context.getSystemService(ClipboardManager::class.java)
+                ?.setPrimaryClip(ClipData.newPlainText("Ferrux", text))
+        }
+        selection.finish()
+    }
+
+    /** The menu for a long press on blank space: Paste (if there is a clip) and Select all. */
     private fun showPasteMenu(x: Float, y: Float) {
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         startActionMode(object : ActionMode.Callback2() {
             override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
                 val clipboard = context.getSystemService(ClipboardManager::class.java)
-                menu.add(Menu.NONE, MENU_PASTE, 0, android.R.string.paste)
-                    .setEnabled(clipboard?.hasPrimaryClip() == true)
-                // TODO(M4): Copy, once text selection exists.
+                if (clipboard?.hasPrimaryClip() == true) {
+                    menu.add(Menu.NONE, MENU_PASTE, 0, android.R.string.paste)
+                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                }
+                menu.add(Menu.NONE, MENU_SELECT_ALL, 1, android.R.string.selectAll)
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
                 return true
             }
 
             override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
 
             override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-                if (item.itemId == MENU_PASTE) pasteFromClipboard()
                 mode.finish()
+                when (item.itemId) {
+                    MENU_PASTE -> pasteFromClipboard()
+                    MENU_SELECT_ALL -> backend?.let {
+                        it.selectAll()
+                        selection.start(fromLongPress = false)
+                    }
+                }
                 return true
             }
 
@@ -654,6 +811,7 @@ class TerminalView @JvmOverloads constructor(
 
     /** Jump back to the live screen when the user types while scrolled back. */
     private fun onUserInput() {
+        if (selection.isActive) selection.finish()
         restartBlink()
         if (snapshot[L.H_DISPLAY_OFFSET] > 0) backend?.scroll(-snapshot[L.H_DISPLAY_OFFSET])
     }
@@ -668,6 +826,13 @@ class TerminalView @JvmOverloads constructor(
             (keyCode == KeyEvent.KEYCODE_V && event.isCtrlPressed && event.isShiftPressed)
         ) {
             pasteFromClipboard()
+            return true
+        }
+        if (selection.isActive &&
+            (keyCode == KeyEvent.KEYCODE_COPY ||
+                (keyCode == KeyEvent.KEYCODE_C && event.isCtrlPressed && event.isShiftPressed))
+        ) {
+            copySelection()
             return true
         }
         val meta = event.metaState
@@ -729,11 +894,13 @@ class TerminalView @JvmOverloads constructor(
         private const val DEFAULT_TEXT_SIZE_SP = 13f
         private const val BLINK_INTERVAL_MS = 530L
         private const val MENU_PASTE = 1
+        private const val MENU_SELECT_ALL = 2
 
         /** Cursor colour of the default "Ferrux Night" palette (ferrux-term). */
         private const val CURSOR_COLOR = 0xFFF29E4C.toInt()
         private const val MIN_TEXT_SIZE_SP = 6f
         private const val MAX_TEXT_SIZE_SP = 40f
+        private const val LINK_UNDERLINE_ALPHA = 0x99
 
         /** Maps Android meta state to [TerminalKeys] modifier bits. */
         fun metaToMods(metaState: Int): Int {
