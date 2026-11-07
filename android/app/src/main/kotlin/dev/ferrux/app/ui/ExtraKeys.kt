@@ -242,10 +242,11 @@ private fun KeyCell(
     // Touch: keys fire on the way down (and repeat while held), so typing feels
     // immediate; see pointerInput below. The click that the same touch produces on
     // release must then be ignored, while a click without a touch comes from TalkBack
-    // or Switch Access and fires the key itself. The flag is set during the down event
-    // and cleared after the up event has been fully dispatched.
-    val touching = remember { BooleanArray(1) }
-    val accessibilityClick = { if (!touching[0]) currentOnPress() }
+    // or Switch Access and fires the key itself. A click counts as the touch's own while
+    // the finger is down or within CLICK_AFTER_TOUCH_MS of lifting, whichever modifier
+    // sees the up event first.
+    val touch = remember { TouchTracker() }
+    val accessibilityClick = { if (!touch.ownsClick()) currentOnPress() }
     // clickable/toggleable give the key its role, click action and (for CTRL/ALT) the
     // checked state that accessibility services read.
     val action = if (key is ExtraKey.Toggle) {
@@ -297,7 +298,7 @@ private fun KeyCell(
             .pointerInput(key, repeatable) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
-                    touching[0] = true
+                    touch.down()
                     pressed = true
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     currentOnPress()
@@ -312,9 +313,9 @@ private fun KeyCell(
                         }
                     }
                     waitForUpOrCancellation()
+                    touch.up()
                     repeater?.cancel()
                     pressed = false
-                    scope.launch { touching[0] = false }
                 }
             },
     ) {
@@ -375,6 +376,24 @@ private fun ArrowIcon(icon: KeyIcon, color: Color) {
     }
 }
 
+/** Tells a key's own click (after a touch) from an accessibility click. */
+private class TouchTracker {
+    private var down = false
+    private var upAt = Long.MIN_VALUE / 2
+
+    fun down() {
+        down = true
+    }
+
+    fun up() {
+        down = false
+        upAt = SystemClock.uptimeMillis()
+    }
+
+    fun ownsClick(): Boolean = down || SystemClock.uptimeMillis() - upAt < CLICK_AFTER_TOUCH_MS
+}
+
+private const val CLICK_AFTER_TOUCH_MS = 500L
 private val KEY_HEIGHT = 44.dp
 private const val REPEAT_DELAY_MS = 400L
 private const val REPEAT_INTERVAL_MS = 50L
