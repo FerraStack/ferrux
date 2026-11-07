@@ -387,32 +387,41 @@ impl SessionManager {
     /// `spawn.size`.
     pub fn spawn(&self, spawn: &SpawnConfig, term: TermConfig) -> Result<Arc<Session>, SpawnError> {
         let (master, child) = ferrux_pty::spawn(spawn)?;
+        let child = Arc::new(child);
         let size = TermSize::new(spawn.size.rows, spawn.size.cols);
         let handle = Arc::new(ChildHandle {
             pid: child.pid(),
             reaped: Mutex::new(false),
         });
-        let session = match self.register(master, Some(handle.clone()), size, term) {
-            Ok(s) => s,
-            Err(e) => {
-                // Don't leave an orphan behind.
-                let _ = child.signal_group(libc_sigkill());
-                let _ = child.wait();
-                return Err(SpawnError::Pty(e));
+        let started = self
+            .new_session(master, Some(handle.clone()), size, term)
+            .map_err(SpawnError::Pty)
+            .and_then(|session| {
+                // The waiter only holds a weak reference, so closing the
+                // session drops the pty master even while the child is still
+                // exiting.
+                let weak = Arc::downgrade(&session);
+                let shared = self.shared.clone();
+                let id = session.id;
+                let (child, handle) = (child.clone(), handle.clone());
+                start_waiter(id, child.pid(), move || {
+                    wait_child(id, &child, &handle, &weak, &shared)
+                })
+                .map_err(SpawnError::Thread)?;
+                Ok(session)
+            });
+        match started {
+            Ok(session) => {
+                self.insert(&session);
+                Ok(session)
             }
-        };
-        // The waiter only holds a weak reference, so closing the session
-        // drops the pty master even while the child is still exiting.
-        let weak = Arc::downgrade(&session);
-        let shared = self.shared.clone();
-        let id = session.id;
-        let spawned = std::thread::Builder::new()
-            .name(format!("ferrux-wait-{id}"))
-            .spawn(move || wait_child(id, &child, &handle, &weak, &shared));
-        if let Err(e) = spawned {
-            log::error!("session {id}: cannot start waiter thread: {e}");
+            Err(e) => {
+                // Nobody will wait for the child: kill and reap it now
+                // rather than leave a zombie behind.
+                kill_and_reap(&child, &handle);
+                Err(e)
+            }
         }
-        Ok(session)
     }
 
     /// Adopts an existing pty master without a local child (e.g. one passed
@@ -423,10 +432,14 @@ impl SessionManager {
         size: TermSize,
         term: TermConfig,
     ) -> io::Result<Arc<Session>> {
-        self.register(master, None, size, term)
+        let session = self.new_session(master, None, size, term)?;
+        self.insert(&session);
+        Ok(session)
     }
 
-    fn register(
+    /// Creates a session without publishing it to the registry or the I/O
+    /// thread yet.
+    fn new_session(
         &self,
         master: PtyMaster,
         child: Option<Arc<ChildHandle>>,
@@ -449,10 +462,14 @@ impl SessionManager {
             }),
             shared: self.shared.clone(),
         });
-        self.shared.sessions().insert(id, session.clone());
+        Ok(session)
+    }
+
+    /// Publishes a session to the registry and the I/O thread.
+    fn insert(&self, session: &Arc<Session>) {
+        self.shared.sessions().insert(session.id, session.clone());
         self.shared.wake_io();
         self.shared.changed();
-        Ok(session)
     }
 
     pub fn get(&self, id: SessionId) -> Option<Arc<Session>> {
@@ -517,6 +534,34 @@ impl Drop for SessionManager {
 
 fn libc_sigkill() -> i32 {
     rustix::process::Signal::KILL.as_raw()
+}
+
+/// Starts the thread that waits for session `id`'s child (`pid`).
+fn start_waiter(id: SessionId, pid: i32, f: impl FnOnce() + Send + 'static) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::fail_waiter_spawn(pid) {
+        return Err(io::Error::other("injected waiter spawn failure"));
+    }
+    #[cfg(not(test))]
+    let _ = pid;
+    std::thread::Builder::new()
+        .name(format!("ferrux-wait-{id}"))
+        .spawn(f)
+        .map(drop)
+}
+
+/// Kills a child that no waiter thread watches (its process group, which it
+/// leads) and reaps it synchronously.
+fn kill_and_reap(child: &Child, handle: &ChildHandle) {
+    let mut reaped = handle.reaped.lock().unwrap_or_else(|e| e.into_inner());
+    if *reaped {
+        return;
+    }
+    let _ = child.signal_group(libc_sigkill());
+    if let Err(e) = child.wait() {
+        log::error!("pid {}: waitpid failed: {e}", child.pid());
+    }
+    *reaped = true;
 }
 
 /// Waits for the child without reaping, then reaps it under the handle lock

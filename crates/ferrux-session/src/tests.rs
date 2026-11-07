@@ -329,3 +329,51 @@ fn close_hangs_up_foreground_job_and_releases_pty() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+// --- Fault injection: waiter thread spawn failure (issue #4) ---
+
+thread_local! {
+    /// When set, the next waiter thread spawn on this thread fails and the
+    /// child's pid is recorded here.
+    static FAIL_WAITER: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Called by `start_waiter`; per test thread, so parallel tests are unaffected.
+pub(super) fn fail_waiter_spawn(pid: i32) -> bool {
+    FAIL_WAITER.with(|f| {
+        if f.get().is_some() {
+            f.set(Some(pid));
+            true
+        } else {
+            false
+        }
+    })
+}
+
+#[test]
+fn waiter_spawn_failure_kills_and_reaps_child() {
+    let mgr = SessionManager::new().unwrap();
+    FAIL_WAITER.with(|f| f.set(Some(0)));
+    let result = mgr.spawn(&sh("exec sleep 30"), TermConfig::default());
+    let pid = FAIL_WAITER.with(|f| f.take()).unwrap();
+    assert!(pid > 0, "fault was not injected");
+
+    let err = result.unwrap_err();
+    assert!(matches!(err, SpawnError::Thread(_)), "{err:?}");
+    assert!(mgr.ids().is_empty(), "failed session was registered");
+    // The child is gone and already reaped: not even a zombie is left, so
+    // waiting for it reports ECHILD.
+    use rustix::process::{Pid, WaitOptions, waitpid};
+    let r = waitpid(Pid::from_raw(pid), WaitOptions::NOHANG);
+    assert_eq!(
+        r.map(|s| s.is_some()),
+        Err(rustix::io::Errno::CHILD),
+        "child {pid} was not reaped"
+    );
+
+    // The manager still works afterwards.
+    let s = mgr.spawn(&sh("exit 4"), TermConfig::default()).unwrap();
+    wait_for(&mgr, &s, "exit", |s| {
+        s.exit_status() == Some(ExitStatus::Exited(4))
+    });
+}
