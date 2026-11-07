@@ -27,7 +27,9 @@ mod events;
 use events::EventQueue;
 
 use ferrux_pty::{Child, ExitStatus, PtyMaster, SpawnConfig, SpawnError, WinSize};
-use ferrux_term::{Key, Modifiers, Snapshot, TermConfig, TermEvent, TermSize, Terminal};
+use ferrux_term::{
+    Key, Modifiers, MouseAction, MouseButton, Snapshot, TermConfig, TermEvent, TermSize, Terminal,
+};
 use rustix::event::{PollFd, PollFlags, Timespec};
 
 pub use ferrux_pty;
@@ -180,6 +182,37 @@ impl Session {
     pub fn scroll(&self, lines: i32) {
         self.lock().terminal.scroll(lines);
         self.shared.changed();
+    }
+
+    /// A scroll gesture at a viewport cell (positive = towards older output):
+    /// scrolls history, or sends arrow keys / wheel events to a program on
+    /// the alternate screen or with mouse reporting on. See
+    /// [`Terminal::scroll_gesture`].
+    pub fn scroll_gesture(&self, lines: i32, row: usize, col: usize) {
+        let bytes = self.lock().terminal.scroll_gesture(lines, row, col);
+        if bytes.is_empty() {
+            self.shared.changed();
+        } else {
+            self.write(&bytes);
+        }
+    }
+
+    /// Reports a mouse event to the program if it enabled mouse reporting;
+    /// returns whether anything was sent.
+    pub fn mouse(
+        &self,
+        button: MouseButton,
+        action: MouseAction,
+        row: usize,
+        col: usize,
+        mods: Modifiers,
+    ) -> bool {
+        let bytes = self
+            .lock()
+            .terminal
+            .encode_mouse(button, action, row, col, mods);
+        self.write(&bytes);
+        !bytes.is_empty()
     }
 
     /// Copies the visible screen.

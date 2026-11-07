@@ -113,6 +113,23 @@ word_xy() {
 # long_press <x> <y>
 long_press() { adb shell input swipe "$1" "$2" "$1" "$2" 1200; }
 
+# drag_rows <rows> <duration ms>: swipes down (towards older output) by <rows>
+# terminal rows, starting a few rows from the top in the middle column.
+drag_rows() {
+  local x y ch dy
+  read -r x y <<< "$(cell_xy 4 "$(($(ui_field cols) / 2))")"
+  ch="$(ui_field cell | cut -d, -f2)"
+  dy="$(awk -v ch="$ch" -v n="$1" 'BEGIN { printf "%d", ch * n }')"
+  adb shell input swipe "$x" "$y" "$x" "$((y + dy))" "$2"
+}
+
+# tap_rect <left,top,right,bottom>
+tap_rect() {
+  local l t r b
+  IFS=, read -r l t r b <<< "$1"
+  adb shell input tap $(((l + r) / 2)) $(((t + b) / 2))
+}
+
 # --- UI nodes ----------------------------------------------------------------
 
 ui_dump() {
@@ -414,6 +431,56 @@ expect_ui selection '^https://example\.com/plain$' "long press selected the whol
 expect_ui actionMode 'Open link' "Open link offered for a plain URL"
 adb shell input keyevent KEYCODE_BACK
 expect_ui selecting '^0$' "Back ended selection mode"
+
+log "12: scrollback: drag, fling, scrollbar and the jump button"
+run_line 'clear'
+type_line 'seq%s1%s400'
+expect_screen '^400$' "400 lines printed"
+hide_ime
+expect_ui history '^[0-9]{3,}$' "hundreds of lines of history"
+expect_ui offset '^0$' "starts on the live screen"
+expect_ui jumpButton '^$' "no jump button on the live screen"
+drag_rows 10 1500
+expect_ui offset '^([89]|1[0-2])$' "a slow 10-row drag scrolled back about 10 lines"
+expect_ui scrollbar '^1$' "scrollbar shown while scrolled back"
+expect_ui jumpButton '^[0-9]+,[0-9]+,[0-9]+,[0-9]+$' "jump-to-live button shown"
+off1="$(ui_field offset)"
+expect_screen "^$((400 - ROWS_FULL - off1 + 3))\$" "the grid shows older lines"
+shot 11-scrollback
+drag_rows 10 60
+sleep 2 # let the fling settle
+off2="$(ui_field offset)"
+[ "$off2" -gt $((off1 + 15)) ] || fail "fling did not carry on: offset $off1 -> $off2"
+log "ok: fling carried on after the finger lifted (offset $off1 -> $off2)"
+tap_rect "$(ui_field jumpButton)"
+expect_ui offset '^0$' "jump button returned to the live screen"
+expect_screen '^400$' "live screen again"
+
+log "13: on the alternate screen a swipe sends arrow keys"
+adb shell "run-as $PKG sh -c 'cat > files/home/mouse.sh'" < "$HERE/ci-mouse.sh"
+type_line 'sh%smouse.sh%salt'
+expect_screen '^ALTSCREEN alt' "full-screen probe started"
+hide_ime
+drag_rows 3 1000
+expect_screen '1b 5b 41 1b 5b 41 ' "the program received Up arrows"
+expect_ui offset '^0$' "the view itself did not scroll"
+expect_ui scrollbar '^0$' "no scrollbar on the alternate screen"
+shot 12-altscreen-scroll
+adb shell input text q
+expect_screen '^ALTSCREEN done$' "probe exited"
+
+log "14: with mouse reporting, swipes are wheel events and taps are clicks"
+type_line 'sh%smouse.sh%smouse'
+expect_screen '^ALTSCREEN mouse' "probe started with mouse reporting"
+hide_ime
+drag_rows 3 1000
+expect_screen '1b 5b 3c 36 34 3b' "the program received wheel-up events (ESC[<64;)"
+adb shell input tap $(cell_xy 2 4)
+expect_screen '1b 5b 3c 30 3b 35 3b 33 4d 1b 5b 3c 30 3b 35 3b 33 6d' "a tap is a click at column 5, row 3 (ESC[<0;5;3M/m)"
+hide_ime
+shot 13-mouse
+adb shell input text q
+expect_screen '^ALTSCREEN done$' "probe exited"
 
 check_crash
 log "all checks passed"

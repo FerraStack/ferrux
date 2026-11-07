@@ -25,6 +25,12 @@ interface TerminalBackend {
 
     fun scroll(lines: Int)
 
+    /** See [FerruxNative.scrollGesture]. By default only scrolls history. */
+    fun scrollGesture(lines: Int, row: Int, col: Int) = scroll(lines)
+
+    /** See [FerruxNative.mouseEvent]. By default mouse reporting is unsupported. */
+    fun mouseEvent(button: Int, action: Int, row: Int, col: Int, mods: Int): Boolean = false
+
     /** See [FerruxNative.startSelection]. */
     fun startSelection(kind: Int, row: Int, col: Int): Boolean = false
 
@@ -55,6 +61,12 @@ class NativeSessionBackend(val sessionId: Long) : TerminalBackend {
     override fun resize(rows: Int, cols: Int) = FerruxNative.resize(sessionId, rows, cols)
 
     override fun scroll(lines: Int) = FerruxNative.scroll(sessionId, lines)
+
+    override fun scrollGesture(lines: Int, row: Int, col: Int) =
+        FerruxNative.scrollGesture(sessionId, lines, row, col)
+
+    override fun mouseEvent(button: Int, action: Int, row: Int, col: Int, mods: Int): Boolean =
+        FerruxNative.mouseEvent(sessionId, button, action, row, col, mods)
 
     override fun startSelection(kind: Int, row: Int, col: Int): Boolean =
         FerruxNative.startSelection(sessionId, kind, row, col)

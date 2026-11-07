@@ -80,6 +80,55 @@ fn interactive_input_and_keys() {
 }
 
 #[test]
+fn scroll_gestures_reach_full_screen_programs() {
+    let mgr = SessionManager::new().unwrap();
+    let s = mgr
+        .spawn(
+            &sh(concat!(
+                // Alternate screen: a scroll gesture arrives as arrow keys.
+                "printf '\\033[?1049hready1'; read a; ",
+                "case \"$a\" in *'[A'*) printf 'UP ';; esac; ",
+                // With SGR mouse reporting: wheel events, then a click.
+                "printf '\\033[?1000h\\033[?1006hready2'; read b; ",
+                "case \"$b\" in *'[<65;3;2M'*'[<0;1;1M'*'[<0;1;1m'*) printf 'MOUSE';; esac; ",
+                "read _"
+            )),
+            TermConfig::default(),
+        )
+        .unwrap();
+    wait_for(&mgr, &s, "alt screen", screen_contains("ready1"));
+    s.scroll_gesture(1, 0, 0);
+    s.send_key(Key::Enter, Modifiers::NONE);
+    wait_for(&mgr, &s, "mouse mode", screen_contains("ready2"));
+    assert!(
+        s.snapshot().text().contains("UP"),
+        "{}",
+        s.snapshot().text()
+    );
+    s.scroll_gesture(-1, 1, 2);
+    assert!(s.mouse(MouseButton::Left, MouseAction::Press, 0, 0, Modifiers::NONE));
+    assert!(s.mouse(
+        MouseButton::Left,
+        MouseAction::Release,
+        0,
+        0,
+        Modifiers::NONE
+    ));
+    assert!(
+        !s.mouse(
+            MouseButton::Left,
+            MouseAction::Motion,
+            0,
+            0,
+            Modifiers::NONE
+        ),
+        "no motion in click mode"
+    );
+    s.send_key(Key::Enter, Modifiers::NONE);
+    wait_for(&mgr, &s, "mouse report", screen_contains("MOUSE"));
+}
+
+#[test]
 fn ctrl_c_interrupts_foreground_job() {
     let mgr = SessionManager::new().unwrap();
     let s = mgr
