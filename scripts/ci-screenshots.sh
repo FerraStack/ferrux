@@ -405,6 +405,8 @@ wait_ime_ready() {
   done
   if ! ime_ready; then
     adb shell dumpsys input_method | grep -E 'mInputShown|mServedView|mCurFocusedWindow' | head -n5 || true
+    # A system dialog over the app takes the focus the keyboard needs.
+    adb shell dumpsys window | grep -E 'mCurrentFocus=' || true
     fail "the soft keyboard never became ready"
   fi
   wait_ime_settled
@@ -528,6 +530,11 @@ adb wait-for-device
 adb shell settings put global window_animation_scale 0
 adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
+# No "<app> isn't responding" / crash dialogs from other apps: on a cold emulator
+# the launcher sometimes stalls, and its dialog takes window focus from the app
+# under test (the soft keyboard then never connects). Our own crashes are still
+# caught from logcat by check_crash.
+adb shell settings put global hide_error_dialogs 1
 adb shell wm size | tee "$OUT/display.txt"
 
 adb install -r -g "$APK"
