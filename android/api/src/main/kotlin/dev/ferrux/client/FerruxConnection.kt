@@ -122,6 +122,17 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
     /** Whether this Ferrux offers [capability] (`FerruxInfo.capabilities`, docs/API.md §5). */
     fun supports(capability: String): Boolean = capability in info.capabilities.orEmpty()
 
+    /**
+     * Throws [FerruxException.Unsupported] unless Ferrux implements API [version].
+     * Every method added after v1 must call this first: an older Ferrux silently
+     * ignores unknown transactions (docs/API.md §4), so calling it would "succeed".
+     */
+    internal fun requireApi(version: Int, method: String) {
+        if (info.apiVersion < version) {
+            throw FerruxException.Unsupported("$method needs Ferrux API $version; this Ferrux has API ${info.apiVersion}")
+        }
+    }
+
     /** Throws [FerruxException.Unsupported] instead of calling into a Ferrux that lacks [capability]. */
     private fun requireCapability(capability: String) {
         if (!supports(capability)) {

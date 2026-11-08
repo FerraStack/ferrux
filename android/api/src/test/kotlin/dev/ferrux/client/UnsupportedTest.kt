@@ -18,7 +18,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
-/** Issue #40: a newer client talking to an older Ferrux degrades, it doesn't disconnect. */
+/** Issue #40: a newer client talking to an older Ferrux degrades instead of failing or disconnecting. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class UnsupportedTest {
@@ -27,15 +27,29 @@ class UnsupportedTest {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean = false
     }
 
+    /**
+     * What an unknown transaction really does with the generated Java proxy: nothing
+     * fails. This is why ferrux-client gates newer methods instead of relying on an
+     * exception (docs/API.md §4).
+     */
     @Test
-    fun unknownTransactionIsUnsupportedNotDisconnected() {
-        // A real generated proxy over a binder that rejects the transaction.
+    fun unknownTransactionsAreSilentSoCallsMustBeGated() {
         val api = IFerruxApi.Stub.asInterface(OldFerrux())
+        api.chmod("x", 0x1ED) // "succeeds" although nothing handled it
+        assertEquals(0, api.apiVersion) // defaults come back
+        assertEquals(null, api.info)
+    }
+
+    @Test
+    fun requireApiRefusesNewerMethods() {
+        val conn = FerruxConnection(RuntimeEnvironment.getApplication())
+        conn.info = FerruxInfo().apply { apiVersion = 1 }
+        conn.requireApi(1, "chmod")
         try {
-            FerruxException.wrap { api.chmod("x", 0x1ED) }
-            fail("an unknown transaction must not succeed silently")
+            conn.requireApi(2, "watch")
+            fail("API 2 methods must be refused by an API 1 Ferrux")
         } catch (e: FerruxException.Unsupported) {
-            assertTrue(e.message, e.message!!.contains("chmod"))
+            assertTrue(e.message, e.message!!.contains("API 2"))
         }
     }
 
