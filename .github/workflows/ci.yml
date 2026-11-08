@@ -104,7 +104,7 @@ jobs:
           "$aapt2" dump xmltree --file AndroidManifest.xml "$apk" > manifest.txt
           grep -A8 'E: permission' manifest.txt | grep -q 'dev.ferrux.permission.API'
           # protectionLevel signature (0x2) | knownSigner (0x8000000)
-          grep -A8 'E: permission' manifest.txt | grep protectionLevel | tee /dev/stderr | grep -q '0x8000002'
+          grep -A8 'E: permission' manifest.txt | grep protectionLevel | tee /dev/stderr | grep -q '=0x08000002'
           grep -A12 'FerruxApiService' manifest.txt | grep -q 'dev.ferrux.api.action.BIND'
           echo "API service and permission declared"
       - name: Check ferrux-client AAR contents
