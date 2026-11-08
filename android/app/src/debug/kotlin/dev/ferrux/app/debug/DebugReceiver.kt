@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.util.Base64
 import android.util.Log
 import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.SessionManager
@@ -35,6 +36,14 @@ import java.util.Locale
  */
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_TYPE) {
+            // CI types commands through the terminal's own input path (what an IME
+            // commit calls), so steps that don't test the keyboard don't depend on
+            // Gboard's start-up timing. Base64 keeps quoting out of `adb shell`.
+            val text = String(Base64.decode(intent.getStringExtra("b64").orEmpty(), Base64.DEFAULT), Charsets.UTF_8)
+            ActiveTerminal.view?.get()?.sendText(text)
+            return
+        }
         if (intent.action == ACTION_SHOW_IME) {
             // Lets CI bring the soft keyboard up before typing, so no keystroke is
             // injected while the IME is still starting.
@@ -100,6 +109,7 @@ class DebugReceiver : BroadcastReceiver() {
     private companion object {
         const val TAG = "FerruxDump"
         const val ACTION_SHOW_IME = "dev.ferrux.debug.SHOW_IME"
+        const val ACTION_TYPE = "dev.ferrux.debug.TYPE"
         const val ACTION_KEEP_SCREEN_ON = "dev.ferrux.debug.KEEP_SCREEN_ON"
     }
 }
