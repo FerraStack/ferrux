@@ -410,6 +410,24 @@ wait_ime_ready() {
   wait_ime_settled
 }
 
+# stable_rows: the grid's row count once it has stayed the same for a second
+# (up to 10 s), e.g. while the window insets settle after launch.
+stable_rows() {
+  local i rows prev="" same=0
+  for i in $(seq 1 20); do
+    rows="$(header_field rows)"
+    if [ -n "$rows" ] && [ "$rows" = "$prev" ]; then
+      same=$((same + 1))
+      [ "$same" -ge 2 ] && break
+    else
+      same=0
+    fi
+    prev="$rows"
+    sleep 0.5
+  done
+  printf '%s' "$rows"
+}
+
 # wait_line <text>: waits (up to 5 s) for the prompt line to end with <text>;
 # prints the line and fails if it doesn't.
 wait_line() {
@@ -521,7 +539,7 @@ adb shell am start -W -n "$ACTIVITY"
 log "01: fresh launch lands in a shell"
 expect_screen '^sessions=1 ' "one session auto-created"
 expect_screen '^~ \$' "shell prompt visible"
-ROWS_FULL="$(header_field rows)"
+ROWS_FULL="$(stable_rows)" # right after launch the insets may still be settling
 log "grid at launch: ${ROWS_FULL} rows x $(header_field cols) cols"
 [ "$ROWS_FULL" -ge 30 ] || fail "terminal only has $ROWS_FULL rows on a full screen"
 shot 01-launch
