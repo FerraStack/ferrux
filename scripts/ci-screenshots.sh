@@ -379,33 +379,96 @@ show_ime() {
   wait_ime_settled
 }
 
-# `input text` needs %s for spaces; keep shell metacharacters out (adb shell
-# passes the string through the device's sh).
-#
-# Even with the keyboard up, Gboard's first start can still drop or reorder a few
-# injected keys. So the typed text is checked on the prompt line; if it isn't
-# there, the line is erased and typed once more. A real input bug fails twice.
-type_text() {
-  local want="${1//%s/ }" attempt i line
-  want="${want% }"
+# ime_ready: the IME service reports the soft keyboard shown and our terminal as
+# the view it serves, so injected keys reach a live input connection. (Keys
+# injected while Gboard is still binding get dropped or reordered: "llo ferrux".)
+ime_ready() {
+  local d served
+  d="$(adb shell dumpsys input_method 2> /dev/null)"
+  printf '%s\n' "$d" | grep -q 'mInputShown=true' || return 1
+  served="$(printf '%s\n' "$d" | grep -oE 'mServedView=[^ ]+' | tail -n1)"
+  # Older releases don't print the served view; mInputShown is all there is then.
+  [ -z "$served" ] || printf '%s' "$served" | grep -q 'TerminalView'
+}
+
+# wait_ime_ready: brings the keyboard up and waits (up to 10 s) until ime_ready
+# holds and the grid has settled above it.
+wait_ime_ready() {
+  local i
   show_ime
-  for attempt in 1 2; do
-    adb shell input text "$1"
-    for i in $(seq 1 12); do
-      line="$(grid_lines | grep -v '^$' | tail -n1)"
-      case "$line" in *"$want") return 0 ;; esac
-      sleep 0.25
-    done
-    log "typed '$want' but the line shows '$line'; retyping"
-    # Erase what reached the line (after the 4-character "~ $ " prompt).
-    adb shell input keyevent $(printf 'KEYCODE_DEL %.0s' $(seq 1 $((${#line} > 4 ? ${#line} - 4 : 1))))
+  for i in $(seq 1 20); do
+    ime_ready && break
     sleep 0.5
   done
-  fail "could not type '$want' (line: '$line')"
+  if ! ime_ready; then
+    adb shell dumpsys input_method | grep -E 'mInputShown|mServedView|mCurFocusedWindow' | head -n5 || true
+    fail "the soft keyboard never became ready"
+  fi
+  wait_ime_settled
+}
+
+# wait_line <text>: waits (up to 5 s) for the prompt line to end with <text>;
+# prints the line and fails if it doesn't.
+wait_line() {
+  local i line=""
+  for i in $(seq 1 20); do
+    line="$(grid_lines | grep -v '^$' | tail -n1)"
+    case "$line" in *"$1") return 0 ;; esac
+    sleep 0.25
+  done
+  echo "$line"
+  return 1
+}
+
+# type_text <text>: types into the terminal through its own input path (what an
+# IME commit calls), via the debug TYPE broadcast. Most steps test the terminal,
+# not the keyboard, so they shouldn't depend on Gboard's start-up timing. The
+# keyboard is still brought up first, so the grid has the same size as with real
+# typing. Real IME typing is covered by type_text_ime (step 02, the CTRL step).
+# Use %s for spaces, as with `adb shell input text`.
+type_text() {
+  local text="${1//%s/ }" want line
+  want="${text% }"
+  show_ime
+  adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.TYPE \
+    --es b64 "$(printf '%s' "$text" | base64 | tr -d '\n')" > /dev/null
+  line="$(wait_line "$want")" || fail "typed '$want' through the terminal, but the line shows '$line'"
+}
+
+# send_text <text>: sends text (or keys a running program reads, e.g. q) through
+# the terminal's input path, without checking the prompt line. \n is Enter.
+send_text() {
+  adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.TYPE \
+    --es b64 "$(printf "$1" | base64 | tr -d '\n')" > /dev/null
 }
 
 type_line() {
   type_text "$1"
+  send_text '\n'
+}
+
+# type_text_ime <text>: types through the soft keyboard (`adb shell input text`),
+# only once the IME reports itself ready. If keys still go missing, that is
+# logged as a warning (so it shows in the run summary) and the line is retyped
+# once; a real input bug fails twice. `input text` needs %s for spaces; keep shell
+# metacharacters out (adb shell passes the string through the device's sh).
+type_text_ime() {
+  local want="${1//%s/ }" attempt line
+  want="${want% }"
+  wait_ime_ready
+  for attempt in 1 2; do
+    adb shell input text "$1"
+    line="$(wait_line "$want")" && return 0
+    echo "::warning::IME typing: typed '$want' but the line shows '$line'; retyping"
+    # Erase what reached the line (after the 4-character "~ $ " prompt).
+    adb shell input keyevent $(printf 'KEYCODE_DEL %.0s' $(seq 1 $((${#line} > 4 ? ${#line} - 4 : 1))))
+    sleep 0.5
+  done
+  fail "could not type '$want' with the soft keyboard (line: '$line')"
+}
+
+type_line_ime() {
+  type_text_ime "$1"
   adb shell input keyevent KEYCODE_ENTER
 }
 
@@ -461,7 +524,8 @@ log "grid at launch: ${ROWS_FULL} rows x $(header_field cols) cols"
 shot 01-launch
 
 log "02: echo"
-type_line 'echo%shello%sferrux'
+# Real soft-keyboard typing (most other steps type through the debug hook).
+type_line_ime 'echo%shello%sferrux'
 expect_screen '^hello ferrux$' "echo output in grid"
 hide_ime
 shot 02-echo
@@ -537,7 +601,7 @@ expect_node 'resource-id="key-Up"' 'content-desc="Up arrow"' 'clickable="true"'
 expect_node 'resource-id="key-/"' 'content-desc="Slash"' 'clickable="true"'
 # Behavioural check: CTRL applies to exactly the next key. Ctrl+A moves to
 # the start of the line in mksh, then '#' (unmodified) comments the line out.
-type_text 'echo%sX'
+type_text_ime 'echo%sX' # the CTRL keys below are typed with the soft keyboard
 tap_node "$CTRL"
 expect_node "$CTRL" 'checked="true"'
 shot 06-ctrl
@@ -671,7 +735,7 @@ expect_screen '1b 5b 41 1b 5b 41' "the program received Up arrows"
 expect_ui offset '^0$' "the view itself did not scroll"
 expect_ui scrollbar '^0$' "no scrollbar on the alternate screen"
 shot 12-altscreen-scroll
-adb shell input text q
+send_text q
 expect_screen '^ALTSCREEN done$' "probe exited"
 
 log "14: with mouse reporting, swipes are wheel events and taps are clicks"
@@ -684,7 +748,7 @@ adb shell input tap $(cell_xy 2 4)
 expect_screen '1b 5b 3c 30 3b 35 3b 33 4d 1b 5b 3c 30 3b 35 3b 33 6d' "a tap is a click at column 5, row 3 (ESC[<0;5;3M/m)"
 hide_ime
 shot 13-mouse
-adb shell input text q
+send_text q
 expect_screen '^ALTSCREEN done$' "probe exited"
 
 log "15: an OSC 52 clipboard write needs the user's permission"

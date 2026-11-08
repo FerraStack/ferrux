@@ -209,7 +209,11 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 
   Each step is checked against the real terminal grid, read through a debug-only
   `DebugReceiver`, and against the UI tree via uiautomator. Logcat is scanned for
-  Java and native crashes, and any failed check fails the job. The API 35 screenshots
+  Java and native crashes, and any failed check fails the job. Steps that only need
+  a command typed send it through the terminal's own input path (a debug-only
+  broadcast), so they don't depend on the soft keyboard's start-up timing. The echo
+  and CTRL steps type with the real soft keyboard, but only once the input method
+  reports it is shown and serving the terminal. The API 35 screenshots
   are pushed to the `ci-screenshots` branch and posted in one PR comment, which is
   updated on every run. Only the last 3 runs are kept, and the
   `screenshots-cleanup` workflow deletes them once the PR closes.
