@@ -38,6 +38,11 @@ android {
             withSourcesJar()
         }
     }
+
+    testOptions {
+        // Robolectric: real Binder/Parcel/RemoteException for the client tests.
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -45,6 +50,7 @@ dependencies {
 
     // Plain JVM tests for the pure-Kotlin parts (cancellation ownership, path logic).
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
 }
 
 

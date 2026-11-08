@@ -192,10 +192,18 @@ already share a key.
   meta-data before binding.
 - **Methods have explicit transaction codes** (`= 1`, `= 2`, …). A code is
   never reused or renumbered; new methods get new codes and bump the version.
-  An old client against a new Ferrux works unchanged. A new client against an
-  old Ferrux must check the version before calling a newer method; calling an
-  unknown code fails with an exception, and `ferrux-client` turns that into
-  `FerruxException.Unsupported`.
+  An old client against a new Ferrux works unchanged.
+  - **A new client against an old Ferrux must check the version (or a
+    capability) before calling a newer method.**
+  - An unknown transaction code doesn't fail: the generated Java proxy ignores
+    `transact()`'s status, so a `void` call appears to succeed and other calls
+    return default values (`0`, `null`).
+  - `ferrux-client` therefore gates every method added after v1 with
+    `requireApi(version)` and capability-dependent calls (`sessions`, `attach`)
+    with `requireCapability`. Both throw `FerruxException.Unsupported` without
+    calling Ferrux.
+  - A Ferrux too old to answer `getApiVersion()` at all reports `0`, which
+    `connect()` turns into `FerruxException.Outdated`.
 - **Parcelables are structured AIDL parcelables.** Fields are only ever
   appended. The generated code writes a size header, so a reader skips fields
   it doesn't know and leaves missing ones at their defaults.

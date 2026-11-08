@@ -43,7 +43,15 @@ sealed class FerruxException(message: String?, cause: Throwable? = null) : Excep
             is SecurityException -> NotPermitted(t.message)
             is UnsupportedOperationException -> Unsupported(t.message, t)
             is DeadObjectException -> Disconnected(t)
-            is RemoteException -> Disconnected(t)
+            // Some AIDL generators report an unknown transaction as "Method <name> is
+            // unimplemented." (the Java one in build-tools 36 doesn't; see
+            // FerruxConnection.requireApi). Either way the connection itself is fine.
+            is RemoteException ->
+                if (t.message?.contains("unimplemented", ignoreCase = true) == true) {
+                    Unsupported(t.message, t)
+                } else {
+                    Disconnected(t)
+                }
             is IllegalArgumentException -> Api(IFerruxApi.ERR_INVALID_ARGUMENT, t.message)
             else -> Api(IFerruxApi.ERR_IO, t.toString())
         }

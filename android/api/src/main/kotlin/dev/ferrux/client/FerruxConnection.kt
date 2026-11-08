@@ -119,6 +119,27 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
         return process
     }
 
+    /** Whether this Ferrux offers [capability] (`FerruxInfo.capabilities`, docs/API.md §5). */
+    fun supports(capability: String): Boolean = capability in info.capabilities.orEmpty()
+
+    /**
+     * Throws [FerruxException.Unsupported] unless Ferrux implements API [version].
+     * Every method added after v1 must call this first: an older Ferrux silently
+     * ignores unknown transactions (docs/API.md §4), so calling it would "succeed".
+     */
+    internal fun requireApi(version: Int, method: String) {
+        if (info.apiVersion < version) {
+            throw FerruxException.Unsupported("$method needs Ferrux API $version; this Ferrux has API ${info.apiVersion}")
+        }
+    }
+
+    /** Throws [FerruxException.Unsupported] instead of calling into a Ferrux that lacks [capability]. */
+    private fun requireCapability(capability: String) {
+        if (!supports(capability)) {
+            throw FerruxException.Unsupported("this Ferrux (API ${info.apiVersion}) doesn't support \"$capability\"")
+        }
+    }
+
     /** Fresh `getInfo()` (e.g. to see the bootstrap state change). */
     suspend fun refreshInfo(): FerruxInfo = call { it.info }.also { info = it }
 
@@ -170,10 +191,14 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
     }
 
     /** Terminal sessions shown in the Ferrux app (capability "attach"). */
-    suspend fun sessions(): List<SessionInfo> = call { it.listSessions().toList() }
+    suspend fun sessions(): List<SessionInfo> {
+        requireCapability(CAPABILITY_ATTACH)
+        return call { it.listSessions().toList() }
+    }
 
     /** Attaches to a Ferrux session; the process's [FerruxProcess.pty] is a socket. */
     suspend fun attach(sessionId: Long, rows: Int, cols: Int): FerruxProcess {
+        requireCapability(CAPABILITY_ATTACH)
         return callOwned({
             register(FerruxProcess.attached(this, it.attachSession(sessionId, rows, cols, callback)))
         }) { it.close() }
@@ -207,5 +232,10 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
         _state.value = ConnectionState.Closed
         runCatching { api.asBinder().unlinkToDeath(death, 0) }
         serviceConnection?.let { runCatching { context.unbindService(it) } }
+    }
+
+    companion object {
+        /** `FerruxInfo.capabilities` entry for shared sessions (`listSessions`/`attachSession`). */
+        const val CAPABILITY_ATTACH = "attach"
     }
 }
