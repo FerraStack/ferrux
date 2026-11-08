@@ -64,6 +64,15 @@ class FerruxSettingsTest {
     }
 
     @Test
+    fun keepScreenOnIsOffByDefaultAndTheChoiceIsKept() {
+        withSettings { settings ->
+            assertFalse(settings.keepScreenOn.value)
+            settings.setKeepScreenOn(true).join()
+        }
+        withSettings { assertTrue(it.keepScreenOn.value) }
+    }
+
+    @Test
     fun corruptFileFallsBackToDefaults() {
         file.writeText("not a protobuf")
         withSettings { settings ->

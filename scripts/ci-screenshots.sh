@@ -265,6 +265,32 @@ expect_focus() {
   log "ok: $2"
 }
 
+wake_lock_held() { adb shell dumpsys power | grep -qE "PARTIAL_WAKE_LOCK +'ferrux:sessions'"; }
+
+# The window flags (fl=…) of the terminal Activity's window.
+window_flags() {
+  adb shell dumpsys window windows |
+    awk '/Window #/ { w = $0 } /fl=/ && w ~ /dev.ferrux.app.MainActivity/ { print }'
+}
+
+screen_kept_on() { window_flags | grep -q KEEP_SCREEN_ON; }
+
+# wait_for <what> <command…>: waits up to 10 s for a command to succeed.
+wait_for() {
+  local what="$1" i
+  shift
+  for i in $(seq 1 20); do
+    if "$@"; then
+      log "ok: $what"
+      return 0
+    fi
+    sleep 0.5
+  done
+  fail "$what"
+}
+
+not() { ! "$@"; }
+
 service_running() {
   adb shell dumpsys activity services "$PKG" | grep -q "ServiceRecord.*FerruxService"
 }
@@ -832,6 +858,33 @@ log "ok: notification removed"
 adb shell am start -W -n "$ACTIVITY" > /dev/null
 expect_screen '^sessions=1 ' "a fresh start after Exit"
 expect_field current "v != $current2" "the old sessions are gone"
+
+log "23: the notification's wake lock toggle"
+expect_screen '^~ \$' "prompt"
+wake_lock_held && fail "a wake lock is held by default"
+adb shell input keyevent KEYCODE_HOME
+expect_focus no "app in the background"
+tap_bounds "$(shade_node 'text="Acquire wakelock"')"
+wait_for "Acquire wakelock took the partial wake lock" wake_lock_held
+shade_node 'text="1 session · wake lock held"' > /dev/null
+shade_node 'text="Release wakelock"' > /dev/null
+log "ok: notification shows the held wake lock"
+sleep 1
+shot 23-wakelock
+tap_bounds "$(shade_node 'text="Release wakelock"')"
+wait_for "Release wakelock let it go" not wake_lock_held
+shade_node 'text="Acquire wakelock"' > /dev/null
+adb shell cmd statusbar collapse
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_focus yes "back in the app"
+
+log "24: keep screen on (off by default)"
+screen_kept_on && fail "the screen is kept on by default"
+log "ok: KEEP_SCREEN_ON not set by default"
+adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on true > /dev/null
+wait_for "keep screen on sets the window flag" screen_kept_on
+adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on false > /dev/null
+wait_for "turning it off clears the flag" not screen_kept_on
 
 check_crash
 log "all checks passed"

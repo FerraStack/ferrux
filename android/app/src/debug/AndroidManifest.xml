@@ -12,6 +12,7 @@
             <intent-filter>
                 <action android:name="dev.ferrux.debug.DUMP_SCREEN" />
                 <action android:name="dev.ferrux.debug.SHOW_IME" />
+                <action android:name="dev.ferrux.debug.KEEP_SCREEN_ON" />
             </intent-filter>
         </receiver>
     </application>

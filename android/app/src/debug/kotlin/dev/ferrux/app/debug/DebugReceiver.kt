@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.SessionManager
 import dev.ferrux.app.ui.ActiveTerminal
 import dev.ferrux.app.FerruxAppNative
@@ -38,6 +39,11 @@ class DebugReceiver : BroadcastReceiver() {
             // Lets CI bring the soft keyboard up before typing, so no keystroke is
             // injected while the IME is still starting.
             ActiveTerminal.view?.get()?.showKeyboard()
+            return
+        }
+        if (intent.action == ACTION_KEEP_SCREEN_ON) {
+            // Stands in for the settings switch until the settings screen exists.
+            FerruxSettings.get(context).setKeepScreenOn(intent.getBooleanExtra("on", false))
             return
         }
         val manager = SessionManager.active
@@ -94,5 +100,6 @@ class DebugReceiver : BroadcastReceiver() {
     private companion object {
         const val TAG = "FerruxDump"
         const val ACTION_SHOW_IME = "dev.ferrux.debug.SHOW_IME"
+        const val ACTION_KEEP_SCREEN_ON = "dev.ferrux.debug.KEEP_SCREEN_ON"
     }
 }

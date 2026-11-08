@@ -61,6 +61,11 @@ class FerruxSettings internal constructor(
      */
     val closeOnCleanExit: StateFlow<Boolean> = _closeOnCleanExit.asStateFlow()
 
+    private val _keepScreenOn = MutableStateFlow(false)
+
+    /** Whether the screen stays on while the terminal is shown. Off by default. */
+    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
+
     init {
         apply(runBlocking(Dispatchers.IO) { store.data.orDefaults().first() })
         // Picks up later changes to the file. The first emission is the state just
@@ -81,6 +86,7 @@ class FerruxSettings internal constructor(
             ?.let { name -> ClipboardPolicy.entries.firstOrNull { it.name == name } }
             ?: ClipboardPolicy.ASK
         _closeOnCleanExit.value = prefs[CLOSE_ON_CLEAN_EXIT] ?: true
+        _keepScreenOn.value = prefs[KEEP_SCREEN_ON] ?: false
     }
 
     /** Saves the terminal font size. Returns the write, for tests. */
@@ -100,6 +106,12 @@ class FerruxSettings internal constructor(
         return scope.launch { store.edit { it[CLOSE_ON_CLEAN_EXIT] = close } }
     }
 
+    /** See [keepScreenOn]. Returns the write, for tests. */
+    fun setKeepScreenOn(on: Boolean): Job {
+        _keepScreenOn.value = on
+        return scope.launch { store.edit { it[KEEP_SCREEN_ON] = on } }
+    }
+
     companion object {
         // Keys are part of the on-disk format: never rename one, add a new key instead.
         // TODO(settings screen): offer a font size control as well.
@@ -108,6 +120,9 @@ class FerruxSettings internal constructor(
 
         // TODO(settings screen): a "Close sessions that exit cleanly" switch.
         internal val CLOSE_ON_CLEAN_EXIT = booleanPreferencesKey("close_on_clean_exit")
+
+        // TODO(settings screen): a "Keep screen on" switch.
+        internal val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
 
         @Volatile private var instance: FerruxSettings? = null
 
