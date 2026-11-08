@@ -22,6 +22,9 @@ RUNNER="$SAMPLE.test/androidx.test.runner.AndroidJUnitRunner"
 TEST_CLASS="$SAMPLE.ApiCrossAppTest"
 OUT="${OUT:-screenshots}"
 mkdir -p "$OUT"
+# shellcheck source=scripts/ci-adb-guard.sh
+. "$(dirname "$0")/ci-adb-guard.sh"
+ensure_device "the API test" || exit 1
 API="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 
 log() { echo "== api: $*"; }
@@ -72,10 +75,12 @@ has_permission || fail "permission not granted to the sample after installing Fe
 log "ok: permission granted (client installed before Ferrux)"
 
 # --- 2. The functional tests (granted).
+ensure_device "the granted tests" || fail "emulator unavailable"
 adb shell am force-stop "$FERRUX"
 instrument granted
 
 # --- 3. Keep-alive: while held, Ferrux's FerruxService runs in the foreground.
+ensure_device "the keep-alive check" || fail "emulator unavailable"
 adb shell am force-stop "$FERRUX"
 # The client must be visible to let Ferrux start its foreground service.
 adb shell am start -W -n "$SAMPLE/.SampleActivity" > /dev/null
@@ -102,6 +107,7 @@ grep -q '^OK (' "$OUT/api-keepalive.txt" || { cat "$OUT/api-keepalive.txt"; fail
 log "ok: keep-alive put FerruxService in the foreground"
 
 # --- 4. Screenshot: the sample renders a live shell from the PTY fd.
+ensure_device "the screenshot" || fail "emulator unavailable"
 adb shell am force-stop "$SAMPLE"
 adb shell am start -W -n "$SAMPLE/.SampleActivity" > /dev/null
 ok=0
@@ -120,6 +126,7 @@ log "ok: sample terminal shows output from the shell in Ferrux"
 adb shell am force-stop "$SAMPLE"
 
 # --- 5. A client signed with an unlisted key is denied.
+ensure_device "the denial check" || fail "emulator unavailable"
 uninstall_clients
 install_clients "$DIR/sample-other.apk" "$DIR/sample-test-other.apk"
 if has_permission; then fail "permission granted to a client signed with an unlisted key"; fi
@@ -128,6 +135,7 @@ log "ok: unlisted signer denied"
 
 # --- 6. A key listed in knownCerts is granted on API 31+ (knownSigner); API 30 only
 #        knows `signature`, so the same client is denied there.
+ensure_device "the knownSigner check" || fail "emulator unavailable"
 uninstall_clients
 install_clients "$DIR/sample-known.apk" "$DIR/sample-test-known.apk"
 if [ "$API" -ge 31 ]; then
