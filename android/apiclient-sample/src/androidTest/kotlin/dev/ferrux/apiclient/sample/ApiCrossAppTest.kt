@@ -15,6 +15,7 @@ import dev.ferrux.client.PtySize
 import java.io.InputStream
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -148,6 +149,59 @@ class ApiCrossAppTest {
             }
         }
         f.delete("api-test", recursive = true)
+    }
+
+    /** Security review of #27: cancelling exec() returns promptly and leaves nothing running. */
+    @Test
+    fun cancelledExecDoesNotLeak() = runBlocking {
+        val c = granted()
+        val before = c.refreshInfo().liveProcesses
+        val started = System.currentTimeMillis()
+        val result = withTimeoutOrNull(1_500) { c.exec(listOf("sh", "-c", "sleep 60")) }
+        assertEquals(null, result)
+        assertTrue("cancellation took too long", System.currentTimeMillis() - started < 10_000)
+        // Ferrux hung the process up: the live count returns to where it was.
+        val deadline = System.currentTimeMillis() + TIMEOUT
+        while (c.refreshInfo().liveProcesses > before) {
+            if (System.currentTimeMillis() > deadline) fail("the cancelled process is still running")
+            Thread.sleep(200)
+        }
+    }
+
+    /** Security review of #27: writeAtomically keeps +x and writes through symlinks. */
+    @Test
+    fun writeAtomicallyKeepsModeAndSymlinks() = runBlocking {
+        val c = granted()
+        val f = c.files
+        f.mkdirs("api-atomic")
+        f.writeText("api-atomic/run.sh", "#!/system/bin/sh\necho one\n")
+        f.chmod("api-atomic/run.sh", 0x1ED) // 0755
+        f.writeAtomically("api-atomic/run.sh", "#!/system/bin/sh\necho two\n".toByteArray())
+        assertEquals(0x1ED, f.stat("api-atomic/run.sh").mode)
+        assertEquals("two\n", c.exec(listOf("sh", "api-atomic/run.sh")).stdout)
+
+        c.exec(listOf("ln", "-s", "run.sh", "api-atomic/link"))
+        f.writeAtomically("api-atomic/link", "#!/system/bin/sh\necho three\n".toByteArray())
+        assertEquals(FileStat.TYPE_SYMLINK, f.stat("api-atomic/link").type)
+        assertEquals("three\n", c.exec(listOf("sh", "api-atomic/run.sh")).stdout)
+        assertEquals(0x1ED, f.stat("api-atomic/run.sh").mode)
+        f.delete("api-atomic", recursive = true)
+    }
+
+    /** Security review of #27: opening a FIFO fails fast instead of blocking a Binder thread. */
+    @Test
+    fun fifoIsRefusedWithoutBlocking() = runBlocking {
+        val c = granted()
+        c.exec(listOf("mkfifo", "api-fifo"))
+        val started = System.currentTimeMillis()
+        try {
+            c.files.open("api-fifo", "r").close()
+            fail("opening a FIFO must be refused")
+        } catch (e: FerruxException.Api) {
+            assertTrue(e.message, System.currentTimeMillis() - started < 5_000)
+        } finally {
+            c.files.delete("api-fifo")
+        }
     }
 
     /** Holds a keep-alive for a while; ci-api.sh checks Ferrux's service is in the foreground meanwhile. */
