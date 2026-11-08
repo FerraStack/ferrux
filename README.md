@@ -84,6 +84,9 @@ Scrolling:
 - If the program turned on mouse reporting (DECSET 1000/1002/1003, in X10, UTF-8 or SGR
   encoding), a swipe sends wheel events and a tap is a left click.
 - Mouse wheels and trackpads scroll 3 lines per notch.
+- When the soft keyboard opens, lines at the top move into the scrollback so the cursor
+  stays visible. When it closes, they come back, but output from before a `clear` stays
+  in the scrollback.
 
 A program can write the clipboard with OSC 52 (`printf "\e]52;c;<base64>\a"`), as tmux, vim and
 ssh sessions do. Any program can, even `cat` of an untrusted file, so Ferrux asks

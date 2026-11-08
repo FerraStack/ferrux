@@ -31,6 +31,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Flags, Hyperlink};
 use alacritty_terminal::term::{self, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{self, Color, CursorShape as EngineCursorShape, NamedColor};
+use alacritty_terminal::vte::{self, Params};
 
 pub use color::{Palette, Rgb};
 pub use keys::{Key, KeyMode, Modifiers};
@@ -168,6 +169,32 @@ pub struct Terminal {
     events: Vec<TermEvent>,
     responses: Vec<u8>,
     title: Option<String>,
+    /// History lines (the newest ones) that a taller screen may pull back into
+    /// view; see [`Terminal::resize`].
+    pullable: usize,
+    /// Spots screen clears in the output, alongside the engine's parser.
+    clears: vte::Parser,
+    clear_seen: ClearDetector,
+}
+
+/// Records whether the output cleared the screen: ED 2/3 (`CSI 2 J`, as sent
+/// by `clear`; `CSI 3 J`) or RIS (`ESC c`).
+#[derive(Debug, Default)]
+struct ClearDetector(bool);
+
+impl vte::Perform for ClearDetector {
+    fn csi_dispatch(&mut self, params: &Params, _: &[u8], _: bool, action: char) {
+        // The engine only reads the first parameter.
+        if action == 'J' && matches!(params.iter().next(), Some([2 | 3, ..])) {
+            self.0 = true;
+        }
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], _: bool, byte: u8) {
+        if byte == b'c' && intermediates.is_empty() {
+            self.0 = true;
+        }
+    }
 }
 
 impl std::fmt::Debug for Terminal {
@@ -197,6 +224,9 @@ impl Terminal {
             events: Vec::new(),
             responses: Vec::new(),
             title: None,
+            pullable: 0,
+            clears: vte::Parser::new(),
+            clear_seen: ClearDetector::default(),
         }
     }
 
@@ -206,9 +236,31 @@ impl Terminal {
 
     /// Parses output from the program.
     pub fn feed(&mut self, bytes: &[u8]) {
+        let history = self.history_size();
+        self.clears.advance(&mut self.clear_seen, bytes);
         self.parser.advance(&mut self.term, bytes);
         self.flush_sync_if_expired();
         self.collect_engine_events();
+        let cleared = std::mem::take(&mut self.clear_seen.0);
+        self.track_history(history, cleared);
+    }
+
+    /// Updates [`Terminal::pullable`] after output: lines that scrolled into
+    /// the history may come back on a taller screen, but nothing from before a
+    /// clear. (A clear in the middle of a chunk also drops what scrolled after
+    /// it; that only leaves blank rows at the bottom on the next grow.)
+    fn track_history(&mut self, before: usize, cleared: bool) {
+        // The alternate screen has no history; the primary one's is unchanged.
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let now = self.history_size();
+        if cleared {
+            self.pullable = 0;
+        } else {
+            self.pullable += now.saturating_sub(before);
+        }
+        self.pullable = self.pullable.min(now);
     }
 
     /// When the program uses synchronized updates (DECSET 2026), output is
@@ -228,10 +280,46 @@ impl Terminal {
 
     /// Changes the grid size, reflowing content. Does not touch the PTY; the
     /// caller resizes that too.
+    ///
+    /// Like xterm, a shorter screen pushes lines off the top into the history
+    /// (as far as needed to keep the cursor visible) and a taller one pulls
+    /// them back, so opening and closing the soft keyboard leaves the screen as
+    /// it was. Unlike the engine on its own, it never pulls back lines from
+    /// before a screen clear: `clear` with the keyboard up, then hiding the
+    /// keyboard, keeps the screen clear (#30).
     pub fn resize(&mut self, size: TermSize) {
         let size = size.clamped();
         self.size = size;
+        let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let history = self.history_size();
         self.term.resize(EngineSize(size));
+        if alt {
+            return;
+        }
+        let now = self.history_size();
+        if now >= history {
+            self.pullable += now - history;
+            return;
+        }
+        let pulled = history - now;
+        let excess = pulled.saturating_sub(self.pullable);
+        self.pullable -= pulled - excess;
+        if excess > 0 {
+            // Put the lines the engine pulled from beyond the limit back: they
+            // are the top rows; the cursor moved down by as many.
+            let rows = self.term.screen_lines();
+            let grid = self.term.grid_mut();
+            grid.scroll_up(&(Line(0)..Line(rows as i32)), excess);
+            grid.cursor.point.line = Line((grid.cursor.point.line.0 - excess as i32).max(0));
+            grid.saved_cursor.point.line =
+                Line((grid.saved_cursor.point.line.0 - excess as i32).max(0));
+        }
+    }
+
+    /// History lines a taller screen may pull back into view (for tests).
+    #[cfg(test)]
+    fn pullable(&self) -> usize {
+        self.pullable
     }
 
     /// Scrolls the view into history by `lines` (positive = older output).
