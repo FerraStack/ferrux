@@ -5,8 +5,6 @@ import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -46,6 +44,10 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.semantics
@@ -265,22 +267,6 @@ private fun KeyCell(
     val scope = rememberCoroutineScope()
     val currentOnPress by rememberUpdatedState(onPress)
     var pressed by remember { mutableStateOf(false) }
-    // clickable / toggleable give the key its role, its click action and, for CTRL and
-    // ALT, the checked state that TalkBack, Switch Access and uiautomator read. Touch
-    // never reaches them: the press handler below fires on the way down (and repeats
-    // while held) and consumes the touch. So their onClick only runs for an
-    // accessibility click, which fires the key once.
-    val action = if (key is ExtraKey.Toggle) {
-        Modifier.toggleable(
-            value = state != ModState.Off,
-            interactionSource = null,
-            indication = null,
-            role = Role.Switch,
-            onValueChange = { currentOnPress() },
-        )
-    } else {
-        Modifier.clickable(interactionSource = null, indication = null, role = Role.Button) { currentOnPress() }
-    }
 
     val background = when {
         state == ModState.Locked -> TerminalColors.Accent
@@ -303,25 +289,33 @@ private fun KeyCell(
             .background(background)
             // Keys never take input focus, so the IME stays connected to the terminal.
             .focusProperties { canFocus = false }
-            // Before the click modifier, not after: clickable/toggleable wrap the key in a
-            // 48 dp minimum touch target, and semantics placed inside that wrapper end up
-            // on a separate accessibility node, leaving the clickable switch unnamed.
-            .semantics {
+            // One leaf accessibility node per key, with everything TalkBack, Switch
+            // Access and uiautomator need: role, spoken name, state (CTRL/ALT are
+            // switches) and a click action. A key with child semantics (its label) got
+            // its name reported on a separate child node, away from the action and
+            // state, so the label's semantics are cleared. Touch never calls onClick
+            // (the press handler below fires the key), so an accessibility click fires
+            // it exactly once, like a tap.
+            .clearAndSetSemantics {
                 contentDescription = key.description
                 testTag = "key-${key.name}"
                 if (key is ExtraKey.Toggle) {
+                    role = Role.Switch
+                    toggleableState = if (state != ModState.Off) ToggleableState.On else ToggleableState.Off
                     stateDescription = when (state) {
                         ModState.Off -> "off"
                         ModState.Once -> "on for next key"
                         ModState.Locked -> "locked"
                     }
+                } else {
+                    role = Role.Button
                 }
+                onClick { currentOnPress(); true }
             }
-            .then(action)
-            // After (inside) the click modifier, so it sees and consumes each touch first.
+            // Fires on the way down (and repeats while held), so typing feels immediate.
             .pointerInput(key, repeatable) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false).consume()
+                    awaitFirstDown(requireUnconsumed = false)
                     pressed = true
                     view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     currentOnPress()
@@ -335,7 +329,7 @@ private fun KeyCell(
                             }
                         }
                     }
-                    waitForUpOrCancellation()?.consume()
+                    waitForUpOrCancellation()
                     repeater?.cancel()
                     pressed = false
                 }
@@ -367,8 +361,6 @@ private fun KeyCell(
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 softWrap = false,
-                // The key's own node already carries the spoken name ("Control", not "CTRL").
-                modifier = Modifier.clearAndSetSemantics {},
             )
         }
     }
