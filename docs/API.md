@@ -88,6 +88,7 @@ credentials, tokens), the installed packages, and the ability to run code.
 |---|---|
 | Any other app on the device | Can't bind: the service requires `dev.ferrux.permission.API`, which is `signature|knownSigner`. The system denies `bindService` with a `SecurityException`. |
 | An app that obtains the `IFerruxApi` binder object from a granted app (a confused or compromised client passing it on) | Every method re-checks `checkCallingPermission(API)` on the **calling** UID (Binder.getCallingUid can't be forged), so a leaked binder is useless to an ungranted app. |
+| A granted client crashing or confusing Ferrux itself, e.g. by passing Ferrux's own `IFerruxApi` binder back as its `IProcessCallback` or keep-alive token | Callback and token binders that are local to Ferrux's process are rejected (`SecurityException`). Exceptions while delivering `onExit` are caught per delivery, so a client can't take down Ferrux and everyone's sessions. |
 | A granted client misusing another client's processes | Process handles are owned by the client UID that created them; other UIDs get `ERR_NO_SUCH_HANDLE`. Shared Ferrux sessions (§6.4) are visible to every granted client by design. |
 | A repackaged FerraStack app (same package name, different key) | Its signer is neither Ferrux's nor in `knownCerts`, so it isn't granted. |
 | Processes running inside Ferrux | Out of scope: they already run as Ferrux's UID. |
@@ -259,6 +260,9 @@ interface IFerruxApi {
     // Lifecycle
     void acquireKeepAlive(IBinder token, String reason) = 16;
     void releaseKeepAlive(IBinder token) = 17;
+
+    // Sets permission bits (mode & 07777) under $HOME (§6.5).
+    void chmod(String path, int mode) = 18;
 }
 ```
 
@@ -349,7 +353,7 @@ parcelable FerruxInfo {
     int androidApi;          // Build.VERSION.SDK_INT
     String abi;              // e.g. "arm64-v8a"
     int liveProcesses;       // processes spawned through the API, all clients
-    int clientProcessLimit;  // max live processes per client (§6.7)
+    int clientProcessLimit;  // max live processes per client app (UID) (§6.7)
 }
 ```
 
@@ -503,10 +507,22 @@ Paths are absolute or relative to `$HOME`. Every path must resolve **inside
   editors from wandering into Ferrux's private state by accident, and lets a
   future files-only grant reuse the same code.
 - `openFile(path, mode)`: `mode` as in `ParcelFileDescriptor.parseMode`
-  (`"r"`, `"w"`, `"wt"`, `"wa"`, `"rw"`, `"rwt"`). Reading and writing go
-  through the fd, so file size isn't limited by Binder. `ferrux-client`'s
-  `writeAtomically` writes to a temporary file next to the target and then
-  calls `rename`.
+  (`"r"`, `"w"`, `"wt"`, `"wa"`, `"rw"`, `"rwt"`).
+  - Reading and writing go through the fd, so file size isn't limited by
+    Binder.
+  - Only regular files can be opened. FIFOs, sockets and devices are refused,
+    and the open itself never blocks.
+  - New files get mode 0600.
+- `chmod(path, mode)` sets permission bits; a final symlink is followed only
+  inside `$HOME`.
+- `ferrux-client`'s `writeAtomically(path, data)` writes a temporary file next
+  to the real target, gives it the target's permission bits, then calls
+  `rename`.
+  - A script keeps its `+x`.
+  - If `path` is a symlink, the file it points to is replaced and the link
+    stays a link. Each step is still confined to `$HOME`.
+- A symlink that points at `$HOME` is an ordinary entry: it can be stat'ed,
+  renamed and deleted like any other link.
 - `list(path, offset, limit)` pages through a directory (sorted by name;
   `limit` ≤ 1000) so a huge directory never exceeds the Binder buffer.
 - `delete(path, recursive)` refuses to delete `$HOME` itself.
@@ -522,7 +538,7 @@ binder passed with it (it is required, never null). Ferrux calls
 
 | Event | What Ferrux does |
 |---|---|
-| `close(handle)` on a spawned process | `SIGHUP` to the process group (and the PTY's foreground group), `SIGKILL` 3 s later if still alive, closes its fds, forgets the handle. Same as closing a Ferrux tab. |
+| `close(handle)` on a spawned process | `SIGHUP` to the process group (and the PTY's foreground group), `SIGKILL` 3 s later if still alive, closes its fds, forgets the handle. Same as closing a Ferrux tab. This also applies after the program itself exited: background children it left in its process group (`sleep 30 &`) are hung up too. |
 | `close(handle)` on an attachment | Detaches; the shared session keeps running. |
 | Client process dies or unbinds (callback binder dies) | `close` on every handle that callback owns. Shared sessions survive. |
 | Program exits | Reaped by a per-pid waiter thread (never `waitpid(-1)`); `onExit` is sent; the handle stays valid for `close` until the client closes it or dies. |
@@ -569,10 +585,13 @@ the API counts, together with the user's own Ferrux sessions. Guidance:
   workspace and language.
 - Prefer one long-lived process over many short ones (`git` subprocess storms
   add up).
-- Ferrux caps each client at **16 live processes** (`clientProcessLimit` in
-  `getInfo`; `ERR_LIMIT` beyond that), so one client can't consume the whole
-  budget. Process groups count as one handle but every member counts towards
-  Android's 32.
+- Ferrux caps each client **app** (UID) at **16 live processes**
+  (`clientProcessLimit` in `getInfo`; `ERR_LIMIT` beyond that), so one client
+  can't consume the whole budget.
+  - Opening more connections doesn't raise the cap.
+  - A handle counts while its program or anything left in its process group
+    runs.
+  - Every process in a group still counts towards Android's 32.
 - A killed phantom process looks like a normal `SIGKILL` exit (`onExit` with
   `signal = 9`). Clients should report "killed by Android (process limit)" and
   offer a restart, rather than looping.

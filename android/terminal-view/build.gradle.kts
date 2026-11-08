@@ -50,7 +50,7 @@ publishing {
         register<MavenPublication>("release") {
             groupId = "dev.ferrux"
             artifactId = "terminal-view"
-            version = providers.gradleProperty("ferrux.publishVersion").getOrElse("0.0.1-SNAPSHOT")
+            version = providers.gradleProperty("ferrux.publishVersion").get()
             afterEvaluate { from(components["release"]) }
             pom {
                 name = "Ferrux terminal-view"
@@ -62,6 +62,17 @@ publishing {
                         url = "https://www.apache.org/licenses/LICENSE-2.0"
                     }
                 }
+            }
+        }
+    }
+    repositories {
+        // GitHub Packages; .github/workflows/publish.yml runs `publish` on main and v* tags.
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/FerraStack/ferrux")
+            credentials {
+                username = providers.environmentVariable("GITHUB_ACTOR").orNull
+                password = providers.environmentVariable("GITHUB_TOKEN").orNull
             }
         }
     }

@@ -8,6 +8,16 @@
     <!-- Only while the user holds it from the notification ("Acquire wakelock"). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Ferrux API v1 (docs/API.md §3.2): granted to apps signed with this build's key
+         (signature) or with a key listed in knownCerts (knownSigner, API 31+). The digest
+         list is generated from android/api-signers.properties + ferrux.api.knownSigners. -->
+    <permission
+        android:name="${applicationId}.permission.API"
+        android:label="@string/api_permission_label"
+        android:description="@string/api_permission_description"
+        android:protectionLevel="signature|knownSigner"
+        android:knownCerts="@array/ferrux_api_known_signers" />
+
     <application
         android:name=".FerruxApplication"
         android:allowBackup="false"
@@ -37,6 +47,19 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Terminal emulator: keeps user-started shell sessions and their processes running" />
+        </service>
+
+        <!-- Ferrux API v1 for FerraStack apps (docs/API.md). -->
+        <service
+            android:name=".api.FerruxApiService"
+            android:exported="true"
+            android:permission="${applicationId}.permission.API">
+            <intent-filter>
+                <action android:name="dev.ferrux.api.action.BIND" />
+            </intent-filter>
+            <meta-data
+                android:name="dev.ferrux.api.VERSION"
+                android:value="1" />
         </service>
     </application>
 </manifest>

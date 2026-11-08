@@ -17,6 +17,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import dev.ferrux.app.api.ApiRegistry
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,9 +31,11 @@ import kotlinx.coroutines.launch
  * Foreground service that owns all terminal sessions, so they survive the
  * Activity being destroyed. The Activity binds to it via [LocalBinder].
  *
- * Lifecycle: [createSession] (re)starts the service in the foreground; when the
- * last session ends, or the notification's Exit action is used, it leaves the
- * foreground and stops itself (it lingers only while an Activity is bound).
+ * Lifecycle: [createSession] (re)starts the service in the foreground, and so does
+ * the API service while clients have processes or keep-alive tokens
+ * ([ApiRegistry.holds]). When the last session ends and no API client needs Ferrux,
+ * or the notification's Exit action is used, it leaves the foreground and stops
+ * itself (it lingers only while an Activity is bound).
  *
  * The notification shows how many sessions there are, opens the app when tapped
  * and has an Exit action that closes every session. It is posted with the
@@ -71,13 +74,17 @@ class FerruxService : LifecycleService() {
         sessions = SessionManager(applicationContext)
         createNotificationChannel()
         lifecycleScope.launch {
-            var hadSessions = false
-            sessions.sessions.combine(wakeLockHeld) { list, held -> list to held }.collect { (list, held) ->
-                if (list.isNotEmpty()) {
-                    hadSessions = true
-                    notificationManager.notify(NOTIFICATION_ID, buildNotification(list, held))
-                } else if (hadSessions) {
-                    hadSessions = false
+            // Foreground while there are sessions or API clients need Ferrux (their
+            // processes, keep-alive tokens: docs/API.md §6.7).
+            var hadWork = false
+            combine(sessions.sessions, wakeLockHeld, ApiRegistry.holds) { list, held, holds ->
+                Triple(list, held, holds)
+            }.collect { (list, held, holds) ->
+                if (list.isNotEmpty() || holds.any) {
+                    hadWork = true
+                    notificationManager.notify(NOTIFICATION_ID, buildNotification(list, held, holds))
+                } else if (hadWork) {
+                    hadWork = false
                     stopForeground(Service.STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -157,7 +164,7 @@ class FerruxService : LifecycleService() {
     }
 
     private fun goForeground() {
-        val notification = buildNotification(sessions.sessions.value, wakeLockHeld.value)
+        val notification = buildNotification(sessions.sessions.value, wakeLockHeld.value, ApiRegistry.holds.value)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -180,7 +187,13 @@ class FerruxService : LifecycleService() {
         notificationManager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(list: List<SessionInfo>, wakeLockHeld: Boolean): Notification {
+    private fun buildNotification(
+        list: List<SessionInfo>,
+        wakeLockHeld: Boolean,
+        holds: ApiRegistry.Holds = ApiRegistry.Holds(0, 0),
+    ): Notification {
+        var summary = sessionSummary(resources, list, wakeLockHeld)
+        if (holds.any) summary = getString(R.string.notification_text_api, summary, holds.processes)
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java)
@@ -200,7 +213,7 @@ class FerruxService : LifecycleService() {
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(getColor(R.color.ferrux_accent))
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(sessionSummary(resources, list, wakeLockHeld))
+            .setContentText(summary)
             .setContentIntent(open)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)

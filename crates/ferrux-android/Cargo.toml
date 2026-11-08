@@ -15,6 +15,7 @@ ferrux-pty.workspace = true
 ferrux-session.workspace = true
 ferrux-env.workspace = true
 ferrux-jni-core.workspace = true
+ferrux-host.workspace = true
 jni.workspace = true
 log.workspace = true
 

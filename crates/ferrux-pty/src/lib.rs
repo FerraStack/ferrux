@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `ferrux-pty`: pseudo-terminals and process spawning for Ferrux.
 //!
+//! [`spawn`] runs a program on a new pty; [`spawn_pipes`] runs it with plain
+//! pipes for stdin/stdout/stderr (language servers, build tools).
+//!
 //! Designed to run inside an Android app process (ART), which constrains how
 //! children may be created:
 //!
@@ -177,6 +180,7 @@ impl SpawnConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildStage {
     Setsid,
+    /// Opening the pty slave or setting up the standard streams.
     OpenPts,
     Chdir,
     Exec,
@@ -236,6 +240,14 @@ impl PtyMaster {
 
     pub fn into_fd(self) -> OwnedFd {
         self.fd
+    }
+
+    /// Duplicates the descriptor (close-on-exec), e.g. to hand one copy to
+    /// another process while keeping one for [`PtyMaster::resize`].
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+        })
     }
 }
 
@@ -393,7 +405,75 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
     let master = open_master(config.size).map_err(SpawnError::Pty)?;
     let pts = rustix::pty::ptsname(&master, Vec::new()).map_err(|e| SpawnError::Pty(e.into()))?;
 
-    let prepared = Prepared::new(config, pts)?;
+    let prepared = Prepared::new(config, ChildStdio::Pty { pts })?;
+    let child = fork_exec(&prepared)?;
+    Ok((PtyMaster { fd: master }, child))
+}
+
+/// The parent's ends of a child's standard streams (see [`spawn_pipes`]).
+#[derive(Debug)]
+pub struct PipeIo {
+    /// Write end of the child's stdin.
+    pub stdin: OwnedFd,
+    /// Read end of the child's stdout.
+    pub stdout: OwnedFd,
+    /// Read end of the child's stderr; `None` when merged into stdout.
+    pub stderr: Option<OwnedFd>,
+}
+
+/// Runs `config.program` with pipes for stdin, stdout and stderr instead of a
+/// pty (`config.size` is ignored). The child is a session and process-group
+/// leader without a controlling terminal, so [`Child::signal_group`] reaches
+/// everything it starts. With `merge_stderr`, stderr goes to the stdout pipe.
+///
+/// All returned descriptors are close-on-exec in this process.
+pub fn spawn_pipes(
+    config: &SpawnConfig,
+    merge_stderr: bool,
+) -> Result<(PipeIo, Child), SpawnError> {
+    use rustix::pipe::{PipeFlags, pipe_with};
+    let pipe = || -> Result<(OwnedFd, OwnedFd), SpawnError> {
+        let (r, w) = pipe_with(PipeFlags::CLOEXEC).map_err(|e| SpawnError::Pty(e.into()))?;
+        Ok((above_stdio(r)?, above_stdio(w)?))
+    };
+    let (in_r, in_w) = pipe()?;
+    let (out_r, out_w) = pipe()?;
+    let err = if merge_stderr { None } else { Some(pipe()?) };
+
+    let stdio = ChildStdio::Fds {
+        stdin: in_r.as_raw_fd(),
+        stdout: out_w.as_raw_fd(),
+        stderr: err
+            .as_ref()
+            .map_or(out_w.as_raw_fd(), |(_, w)| w.as_raw_fd()),
+    };
+    let prepared = Prepared::new(config, stdio)?;
+    let child = fork_exec(&prepared)?;
+    // The child's ends now live in the child only.
+    drop((in_r, out_w));
+    let stderr = err.map(|(r, _w)| r);
+    Ok((
+        PipeIo {
+            stdin: in_w,
+            stdout: out_r,
+            stderr,
+        },
+        child,
+    ))
+}
+
+/// Moves `fd` to a number >= 3 (keeping close-on-exec), so `dup2` onto
+/// 0, 1 and 2 in the child can't clobber another source descriptor. Only
+/// matters in processes that run with a standard stream closed.
+fn above_stdio(fd: OwnedFd) -> Result<OwnedFd, SpawnError> {
+    if fd.as_raw_fd() >= 3 {
+        return Ok(fd);
+    }
+    rustix::io::fcntl_dupfd_cloexec(&fd, 3).map_err(|e| SpawnError::Pty(e.into()))
+}
+
+/// Forks, runs `child_main` in the child and waits for its exec report.
+fn fork_exec(prepared: &Prepared) -> Result<Child, SpawnError> {
     let (err_read, err_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
         .map_err(|e| SpawnError::Pty(e.into()))?;
     let max_fd = max_fd();
@@ -411,7 +491,7 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         // SAFETY: we are the freshly forked child.
-        unsafe { child_main(&prepared, err_write.as_raw_fd(), max_fd, use_close_range) }
+        unsafe { child_main(prepared, err_write.as_raw_fd(), max_fd, use_close_range) }
     }
     let fork_error = io::Error::last_os_error();
     // Restore the parent's mask (on success and on failure alike).
@@ -423,7 +503,7 @@ pub fn spawn(config: &SpawnConfig) -> Result<(PtyMaster, Child), SpawnError> {
 
     let child = Child { pid };
     match read_child_error(&err_read) {
-        None => Ok((PtyMaster { fd: master }, child)),
+        None => Ok(child),
         Some((stage, errno)) => {
             let _ = child.wait();
             Err(SpawnError::Child {
@@ -530,10 +610,22 @@ fn max_fd() -> libc::c_int {
     }
 }
 
+/// Where the child's standard streams come from.
+enum ChildStdio {
+    /// Open this pty slave and make it the controlling terminal.
+    Pty { pts: CString },
+    /// `dup2` these descriptors (all >= 3) onto 0, 1 and 2.
+    Fds {
+        stdin: RawFd,
+        stdout: RawFd,
+        stderr: RawFd,
+    },
+}
+
 /// Everything the child needs, allocated before fork.
 struct Prepared {
     exec_path: CString,
-    pts: CString,
+    stdio: ChildStdio,
     cwd: Option<CString>,
     // Owned strings backing the pointer arrays below.
     _argv: Vec<CString>,
@@ -555,7 +647,7 @@ fn path_bytes(p: &Path) -> &[u8] {
 }
 
 impl Prepared {
-    fn new(config: &SpawnConfig, pts: CString) -> Result<Self, SpawnError> {
+    fn new(config: &SpawnConfig, stdio: ChildStdio) -> Result<Self, SpawnError> {
         let program = cstring(path_bytes(&config.program))?;
         let arg0 = match &config.arg0 {
             Some(a) => cstring(os(a))?,
@@ -605,7 +697,7 @@ impl Prepared {
         };
         Ok(Self {
             exec_path,
-            pts,
+            stdio,
             cwd,
             argv_ptrs: null_terminated(&argv),
             envp_ptrs: null_terminated(&envp),
@@ -669,16 +761,33 @@ unsafe fn child_main(p: &Prepared, err_fd: RawFd, max_fd: libc::c_int, use_close
         if libc::setsid() < 0 {
             fail(0);
         }
-        // As a session leader without a controlling tty, opening the slave
-        // makes it ours; TIOCSCTTY makes that explicit.
-        let slave = libc::open(p.pts.as_ptr(), libc::O_RDWR);
-        if slave < 0 {
-            fail(1);
-        }
-        libc::ioctl(slave, libc::TIOCSCTTY as _, 0);
-        for fd in 0..3 {
-            if libc::dup2(slave, fd) < 0 {
-                fail(1);
+        match &p.stdio {
+            ChildStdio::Pty { pts } => {
+                // As a session leader without a controlling tty, opening the
+                // slave makes it ours; TIOCSCTTY makes that explicit.
+                let slave = libc::open(pts.as_ptr(), libc::O_RDWR);
+                if slave < 0 {
+                    fail(1);
+                }
+                libc::ioctl(slave, libc::TIOCSCTTY as _, 0);
+                for fd in 0..3 {
+                    if libc::dup2(slave, fd) < 0 {
+                        fail(1);
+                    }
+                }
+            }
+            // The sources are >= 3, so these dup2 calls can't clobber each
+            // other; dup2 clears close-on-exec on the targets.
+            &ChildStdio::Fds {
+                stdin,
+                stdout,
+                stderr,
+            } => {
+                for (src, dst) in [(stdin, 0), (stdout, 1), (stderr, 2)] {
+                    if libc::dup2(src, dst) < 0 {
+                        fail(1);
+                    }
+                }
             }
         }
 

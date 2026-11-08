@@ -23,6 +23,7 @@ ferrux-pty = { path = "crates/ferrux-pty" }
 ferrux-session = { path = "crates/ferrux-session" }
 ferrux-env = { path = "crates/ferrux-env" }
 ferrux-jni-core = { path = "crates/ferrux-jni-core" }
+ferrux-host = { path = "crates/ferrux-host" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

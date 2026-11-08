@@ -286,3 +286,63 @@ fn signal_masks_after_spawn() {
     .join()
     .unwrap();
 }
+
+fn read_fd_to_end(fd: OwnedFd) -> String {
+    let mut file = std::fs::File::from(fd);
+    let mut s = String::new();
+    file.read_to_string(&mut s).unwrap();
+    s
+}
+
+#[test]
+fn pipes_round_trip_with_separate_stderr() {
+    let cfg = sh("read line; printf 'out:%s' \"$line\"; printf err >&2; exit 5");
+    let (io, child) = spawn_pipes(&cfg, false).unwrap();
+    let mut stdin = std::fs::File::from(io.stdin);
+    stdin.write_all(b"ping\n").unwrap();
+    drop(stdin);
+    assert_eq!(read_fd_to_end(io.stdout), "out:ping");
+    assert_eq!(read_fd_to_end(io.stderr.unwrap()), "err");
+    assert_eq!(child.wait().unwrap(), ExitStatus::Exited(5));
+}
+
+#[test]
+fn pipes_merge_stderr_and_have_no_tty() {
+    let cfg = sh("test -t 0 || test -t 1 || printf no-tty; printf ' e' >&2");
+    let (io, child) = spawn_pipes(&cfg, true).unwrap();
+    assert!(io.stderr.is_none());
+    drop(io.stdin);
+    assert_eq!(read_fd_to_end(io.stdout), "no-tty e");
+    assert_eq!(child.wait().unwrap().code(), 0);
+}
+
+#[test]
+fn pipes_child_is_a_group_leader_and_eof_on_stdin() {
+    // `cat` exits once stdin is closed; the shell is its own group leader.
+    let cfg = sh("cat >/dev/null; ps -o pgid= -p $$ 2>/dev/null || echo $$");
+    let (io, child) = spawn_pipes(&cfg, false).unwrap();
+    drop(io.stdin);
+    let out = read_fd_to_end(io.stdout);
+    assert_eq!(out.trim(), child.pid().to_string());
+    assert_eq!(child.wait().unwrap().code(), 0);
+}
+
+#[test]
+fn pipes_exec_failure_is_reported() {
+    let err = spawn_pipes(&SpawnConfig::new("/nonexistent/prog"), false).unwrap_err();
+    assert!(matches!(
+        err,
+        SpawnError::Child {
+            stage: ChildStage::Exec,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn pipes_signal_group() {
+    let (io, child) = spawn_pipes(&sh("sleep 30"), true).unwrap();
+    child.signal_group(libc::SIGTERM).unwrap();
+    assert_eq!(child.wait().unwrap(), ExitStatus::Signaled(libc::SIGTERM));
+    drop(io);
+}
