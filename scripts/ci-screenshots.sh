@@ -233,6 +233,7 @@ expect_node() {
     sleep 1
   done
   echo "node: $n"
+  ui_dump > "$OUT/ui-node-failed.xml"
   fail "$sel lacks one of: $*"
 }
 
@@ -463,6 +464,9 @@ sleep 1
 log "06: CTRL toggle, as accessibility services see it"
 # The keys are found by resource-id (their test tag); content-desc is the spoken name.
 CTRL='resource-id="key-CTRL"'
+# Diagnostics: the extra keys' accessibility nodes (and their children) as uiautomator sees them.
+ui_dump > "$OUT/ui-06-keys.xml"
+tr '<' '\n' < "$OUT/ui-06-keys.xml" | awk '/resource-id="key-/ { n = 3 } n > 0 { print; n-- }' | head -n 40 | cut -c1-400
 expect_node "$CTRL" 'content-desc="Control"' 'checkable="true"' 'checked="false"' 'clickable="true"'
 expect_node 'resource-id="key-ESC"' 'content-desc="Escape"' 'clickable="true"'
 expect_node 'resource-id="key-Up"' 'content-desc="Up arrow"' 'clickable="true"'
