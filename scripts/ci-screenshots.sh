@@ -383,12 +383,12 @@ show_ime() {
 # the view it serves, so injected keys reach a live input connection. (Keys
 # injected while Gboard is still binding get dropped or reordered: "llo ferrux".)
 ime_ready() {
-  local d served
+  local d
   d="$(adb shell dumpsys input_method 2> /dev/null)"
   printf '%s\n' "$d" | grep -q 'mInputShown=true' || return 1
-  served="$(printf '%s\n' "$d" | grep -oE 'mServedView=[^ ]+' | tail -n1)"
-  # Older releases don't print the served view; mInputShown is all there is then.
-  [ -z "$served" ] || printf '%s' "$served" | grep -q 'TerminalView'
+  # The dump lists every client connection; ours must be among the served ones
+  # (others, such as fallback connections, show mServedView=null).
+  printf '%s\n' "$d" | grep -q 'mServedView=[^ ]*TerminalView'
 }
 
 # wait_ime_ready: brings the keyboard up and waits (up to 10 s) until ime_ready
