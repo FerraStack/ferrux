@@ -288,6 +288,16 @@ fn per_owner_limit() {
     host.spawn(&sh("true"), 2, uid(2)).unwrap();
     host.kill(a.handle).unwrap();
     wait_exit(&host, a.handle);
+    // The leader is reaped first; a killed child of `sh` may keep the process
+    // group (and so the slot) alive a moment longer.
+    let start = Instant::now();
+    while host.live_count_of_uid(uid(1)) >= 2 {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "slot never freed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     host.spawn(&sh("true"), 1, uid(1)).unwrap();
     host.close_owner(1);
 }

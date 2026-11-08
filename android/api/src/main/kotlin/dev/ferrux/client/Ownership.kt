@@ -6,6 +6,8 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 private object Unset
@@ -15,9 +17,9 @@ private object Unset
  * descriptor, a keep-alive) without leaking it when the caller is cancelled.
  *
  * The call itself always completes ([NonCancellable]): a Binder call can't be
- * interrupted anyway. If the caller was cancelled meanwhile, `withContext` would
- * silently drop the result, so [release] is run on it instead and the cancellation
- * is rethrown.
+ * interrupted anyway. If the caller was cancelled meanwhile, [release] is run on the
+ * result and the cancellation is rethrown, instead of handing a resource to a caller
+ * that will drop it.
  */
 internal suspend fun <T> completeOrRelease(
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -27,6 +29,9 @@ internal suspend fun <T> completeOrRelease(
     val result = AtomicReference<Any?>(Unset)
     try {
         withContext(NonCancellable + dispatcher) { result.set(block()) }
+        // withContext(NonCancellable) returns normally even to a cancelled caller,
+        // which would then drop the result at its next suspension point.
+        currentCoroutineContext().ensureActive()
     } catch (e: CancellationException) {
         val r = result.get()
         if (r !== Unset) {
