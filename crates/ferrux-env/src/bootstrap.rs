@@ -27,7 +27,7 @@ use crate::Layout;
 
 /// Release of `FerraStack/ferrux-packages` whose bootstrap archives this
 /// build of Ferrux installs.
-pub const BOOTSTRAP_RELEASE: &str = "bootstrap-2026.11.08-r2";
+pub const BOOTSTRAP_RELEASE: &str = "bootstrap-2026.11.08-r1";
 
 /// A bootstrap archive pinned by URL and SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,11 +42,11 @@ pub struct PinnedBootstrap {
 pub const PINNED: &[PinnedBootstrap] = &[
     PinnedBootstrap {
         arch: "aarch64",
-        sha256: "4d17a513f54e2f68792e17c13b5c0ac75331d01bdc21d36314bacdc0c261a5b3",
+        sha256: "52c06f8a7609a6eafe0390d9dd4963261afc5d174760a153b9bcbdf6b2221523",
     },
     PinnedBootstrap {
         arch: "x86_64",
-        sha256: "679556269e46b6d515341a88400d3e045a2753d583882f29839f15feb60e15ad",
+        sha256: "daebdf1f52a7c90e5b8258065ef7923293833aeeedc3f402cdeb8006f7cb6cca",
     },
 ];
 
