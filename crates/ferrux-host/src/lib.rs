@@ -32,8 +32,10 @@ pub use ferrux_pty;
 
 /// Identifies a spawned process; never reused within a [`Host`]. Always > 0.
 pub type Handle = u64;
-/// Identifies a client (in practice one `IProcessCallback` binder).
+/// Identifies a client connection (in practice one `IProcessCallback` binder).
 pub type OwnerId = u64;
+/// The Android UID of the client app; limits are per UID, not per connection.
+pub type Uid = u32;
 
 /// Error codes; the numbers are the `ERR_*` constants of `IFerruxApi`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,12 +140,13 @@ impl ExitEvent {
 
 /// How long closed processes get after `SIGHUP` before `SIGKILL`.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(3);
-/// Default cap on live processes per owner (docs/API.md §6.7).
+/// Default cap on live processes per client app (UID) (docs/API.md §6.7).
 pub const DEFAULT_OWNER_LIMIT: usize = 16;
 
 #[derive(Debug)]
 struct Proc {
     owner: OwnerId,
+    uid: Uid,
     pid: i32,
     /// Set (under the lock) when the child has been reaped.
     reaped: Mutex<bool>,
@@ -156,19 +159,27 @@ impl Proc {
         self.reaped.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Sends `signal` to each group in `groups` if the child is unreaped.
+    /// Sends `signal` to each process group in `groups`.
+    ///
+    /// Also after the leader was reaped: background children (`sleep 30 &`)
+    /// stay in its group, and a process group id can't be reused while any
+    /// member is alive. Once the group is empty, `kill` fails with `ESRCH`.
+    /// The lock orders this against reaping in the waiter thread.
     fn signal_groups(&self, groups: &[i32], signal: i32) {
-        let reaped = self.reaped();
-        if *reaped {
-            return;
-        }
+        let _reaped = self.reaped();
         for &g in groups {
             // SAFETY: plain syscall wrapper; `g` > 0 is a process group of our
-            // still-unreaped child's session.
+            // child's session.
             if g > 0 && unsafe { libc::kill(-g, signal) } != 0 {
                 log::debug!("kill(-{g}, {signal}): {}", std::io::Error::last_os_error());
             }
         }
+    }
+
+    /// Whether the child or anything left in its process group is running.
+    fn is_live(&self) -> bool {
+        // SAFETY: plain syscall wrapper; signal 0 only checks existence.
+        !*self.reaped() || unsafe { libc::kill(-self.pid, 0) } == 0
     }
 
     /// The child's own group, plus the pty's foreground group if different.
@@ -211,6 +222,8 @@ pub struct Host {
     owner_limit: usize,
     next: AtomicU64,
     inner: Arc<Inner>,
+    /// Serialises spawns so the per-UID limit check and the insert are atomic.
+    spawn_lock: Mutex<()>,
 }
 
 impl Host {
@@ -223,6 +236,7 @@ impl Host {
             owner_limit: DEFAULT_OWNER_LIMIT,
             next: AtomicU64::new(1),
             inner: Arc::default(),
+            spawn_lock: Mutex::new(()),
         }
     }
 
@@ -245,16 +259,18 @@ impl Host {
         files::Files::new(self.layout.home())
     }
 
-    /// Number of spawned processes that haven't exited yet.
+    /// Number of spawned processes still running (including handles whose
+    /// leader exited but left background children in its process group).
     pub fn live_count(&self) -> usize {
-        self.inner.procs().values().filter(|p| !*p.reaped()).count()
+        self.inner.procs().values().filter(|p| p.is_live()).count()
     }
 
-    fn live_count_of(&self, owner: OwnerId) -> usize {
+    /// Live processes of every connection of the client app `uid`.
+    pub fn live_count_of_uid(&self, uid: Uid) -> usize {
         self.inner
             .procs()
             .values()
-            .filter(|p| p.owner == owner && !*p.reaped())
+            .filter(|p| p.uid == uid && p.is_live())
             .count()
     }
 
@@ -263,13 +279,16 @@ impl Host {
         self.inner.procs().get(&handle).map(|p| p.owner)
     }
 
-    /// Spawns a program for `owner` (docs/API.md §6.2, §6.3).
-    pub fn spawn(&self, req: &SpawnRequest, owner: OwnerId) -> Result<Spawned> {
-        if self.live_count_of(owner) >= self.owner_limit {
+    /// Spawns a program for connection `owner` of client app `uid` (docs/API.md
+    /// §6.2, §6.3). At most [`Host::owner_limit`] live processes per `uid`,
+    /// however many connections it opens.
+    pub fn spawn(&self, req: &SpawnRequest, owner: OwnerId, uid: Uid) -> Result<Spawned> {
+        let _serial = self.spawn_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.live_count_of_uid(uid) >= self.owner_limit {
             return Err(HostError::new(
                 ErrorCode::Limit,
                 format!(
-                    "this client already runs {} processes (limit)",
+                    "this app already runs {} processes in Ferrux (limit)",
                     self.owner_limit
                 ),
             ));
@@ -310,6 +329,7 @@ impl Host {
         let pid = child.pid();
         let proc = Arc::new(Proc {
             owner,
+            uid,
             pid,
             reaped: Mutex::new(false),
             master,
@@ -530,7 +550,7 @@ fn is_executable(p: &Path) -> bool {
 }
 
 fn hang_up(handle: Handle, proc: Arc<Proc>) {
-    if *proc.reaped() {
+    if !proc.is_live() {
         return;
     }
     let groups = proc.groups();

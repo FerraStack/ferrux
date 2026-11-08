@@ -115,6 +115,7 @@ class FerruxApiService : Service() {
                 request.rows,
                 request.cols,
                 owner.id,
+                uid,
             )
             // A failed foreground start doesn't fail the spawn: the client is bound,
             // so Ferrux shares its priority while it is visible.
@@ -208,6 +209,11 @@ class FerruxApiService : Service() {
                     "Android did not allow Ferrux to start its foreground service; open Ferrux once",
                 )
             }
+        }
+
+        override fun chmod(path: String?, mode: Int) {
+            enforce()
+            ApiNative.chmod(requireNotNull(path), mode)
         }
 
         override fun releaseKeepAlive(token: IBinder?) {

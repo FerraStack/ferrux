@@ -40,6 +40,11 @@ impl Drop for TempLayout {
     }
 }
 
+/// One client app per owner in most tests.
+fn uid(owner: OwnerId) -> Uid {
+    10_000 + owner as Uid
+}
+
 fn sh(script: &str) -> SpawnRequest {
     SpawnRequest {
         argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
@@ -84,7 +89,7 @@ fn wait_exit(host: &Host, handle: Handle) -> ExitEvent {
 fn pipes_echo_and_exit_code() {
     let t = TempLayout::new("echo");
     let host = t.host();
-    let s = host.spawn(&sh("echo api-ok; exit 7"), 1).unwrap();
+    let s = host.spawn(&sh("echo api-ok; exit 7"), 1, uid(1)).unwrap();
     let handle = s.handle;
     assert!(s.pid > 0);
     let (stdin, stdout, stderr) = pipes(s);
@@ -111,7 +116,7 @@ fn stdin_round_trip_and_merged_stderr() {
     let host = t.host();
     let mut req = sh("cat; echo err >&2");
     req.merge_stderr = true;
-    let (stdin, stdout, stderr) = pipes(host.spawn(&req, 1).unwrap());
+    let (stdin, stdout, stderr) = pipes(host.spawn(&req, 1, uid(1)).unwrap());
     assert!(stderr.is_none());
     let mut stdin = std::fs::File::from(stdin);
     stdin.write_all(b"Content-Length: 2\r\n\r\n{}").unwrap();
@@ -135,7 +140,7 @@ fn env_merge_cwd_and_path_lookup() {
         cwd: Some("proj".into()),
         ..Default::default()
     };
-    let (_, stdout, _) = pipes(host.spawn(&req, 1).unwrap());
+    let (_, stdout, _) = pipes(host.spawn(&req, 1, uid(1)).unwrap());
     let home = std::fs::canonicalize(t.layout.home()).unwrap();
     assert_eq!(
         read_all(stdout),
@@ -148,7 +153,7 @@ fn env_merge_cwd_and_path_lookup() {
 
     let mut clear = sh("echo \"[$FERRUX_PREFIX]\"");
     clear.clear_env = true;
-    let (_, stdout, _) = pipes(host.spawn(&clear, 1).unwrap());
+    let (_, stdout, _) = pipes(host.spawn(&clear, 1, uid(1)).unwrap());
     assert_eq!(read_all(stdout), "[]\n");
 }
 
@@ -156,7 +161,7 @@ fn env_merge_cwd_and_path_lookup() {
 fn spawn_errors() {
     let t = TempLayout::new("errors");
     let host = t.host();
-    let err = |req: SpawnRequest| host.spawn(&req, 1).unwrap_err().code;
+    let err = |req: SpawnRequest| host.spawn(&req, 1, uid(1)).unwrap_err().code;
 
     assert_eq!(err(SpawnRequest::default()), ErrorCode::InvalidArgument);
     let mut bad_env = sh("true");
@@ -185,7 +190,7 @@ fn pty_master_is_handed_out_and_resizable() {
     let host = t.host();
     let mut req = sh("stty size; read line; echo got:$line; stty size");
     req.pty = Some(WinSize::new(20, 70));
-    let s = host.spawn(&req, 9).unwrap();
+    let s = host.spawn(&req, 9, uid(9)).unwrap();
     let handle = s.handle;
     let SpawnedIo::Pty { master } = s.io else {
         panic!("expected a pty")
@@ -214,7 +219,7 @@ fn pty_master_is_handed_out_and_resizable() {
 fn resize_of_pipes_is_unsupported() {
     let t = TempLayout::new("resize");
     let host = t.host();
-    let s = host.spawn(&sh("true"), 1).unwrap();
+    let s = host.spawn(&sh("true"), 1, uid(1)).unwrap();
     assert_eq!(
         host.resize(s.handle, 1, 1).unwrap_err().code,
         ErrorCode::Unsupported
@@ -230,14 +235,14 @@ fn kill_and_signal_reach_the_group() {
     let t = TempLayout::new("kill");
     let host = t.host();
     // The grandchild keeps stdout open; killing the group must close it.
-    let s = host.spawn(&sh("sleep 30 & wait"), 1).unwrap();
+    let s = host.spawn(&sh("sleep 30 & wait"), 1, uid(1)).unwrap();
     let handle = s.handle;
     let (_stdin, stdout, _) = pipes(s);
     host.kill(handle).unwrap();
     assert_eq!(wait_exit(&host, handle).code_and_signal(), (-1, 9));
     assert_eq!(read_all(stdout), "");
 
-    let s = host.spawn(&sh("sleep 30"), 1).unwrap();
+    let s = host.spawn(&sh("sleep 30"), 1, uid(1)).unwrap();
     host.signal(s.handle, libc::SIGTERM).unwrap();
     assert_eq!(
         wait_exit(&host, s.handle).code_and_signal(),
@@ -253,8 +258,8 @@ fn kill_and_signal_reach_the_group() {
 fn close_owner_hangs_up_only_that_owner() {
     let t = TempLayout::new("owner");
     let host = t.host();
-    let a = host.spawn(&sh("sleep 30"), 1).unwrap();
-    let b = host.spawn(&sh("sleep 30"), 2).unwrap();
+    let a = host.spawn(&sh("sleep 30"), 1, uid(1)).unwrap();
+    let b = host.spawn(&sh("sleep 30"), 2, uid(2)).unwrap();
     assert_eq!(host.live_count(), 2);
     assert_eq!(host.close_owner(1), 1);
     assert_eq!(host.owner_of(a.handle), None);
@@ -273,17 +278,17 @@ fn close_owner_hangs_up_only_that_owner() {
 fn per_owner_limit() {
     let t = TempLayout::new("limit");
     let host = t.host().with_owner_limit(2);
-    let a = host.spawn(&sh("sleep 30"), 1).unwrap();
-    let _b = host.spawn(&sh("sleep 30"), 1).unwrap();
+    let a = host.spawn(&sh("sleep 30"), 1, uid(1)).unwrap();
+    let _b = host.spawn(&sh("sleep 30"), 1, uid(1)).unwrap();
     assert_eq!(
-        host.spawn(&sh("true"), 1).unwrap_err().code,
+        host.spawn(&sh("true"), 1, uid(1)).unwrap_err().code,
         ErrorCode::Limit
     );
     // Other owners are unaffected.
-    host.spawn(&sh("true"), 2).unwrap();
+    host.spawn(&sh("true"), 2, uid(2)).unwrap();
     host.kill(a.handle).unwrap();
     wait_exit(&host, a.handle);
-    host.spawn(&sh("true"), 1).unwrap();
+    host.spawn(&sh("true"), 1, uid(1)).unwrap();
     host.close_owner(1);
 }
 
@@ -407,6 +412,182 @@ fn files_are_confined_to_home() {
     assert!(secret.exists());
     assert_eq!(
         code(f.open("/etc/passwd", OpenMode::Read)),
+        ErrorCode::OutsideHome
+    );
+}
+
+// --- Regression tests from the security review of #27 ---
+
+/// Opening several connections (owners) doesn't multiply the per-app limit.
+#[test]
+fn limit_is_per_uid_not_per_connection() {
+    let t = TempLayout::new("uid-limit");
+    let host = t.host().with_owner_limit(2);
+    let app = 10_500;
+    host.spawn(&sh("sleep 30"), 1, app).unwrap();
+    host.spawn(&sh("sleep 30"), 2, app).unwrap();
+    let err = host.spawn(&sh("sleep 30"), 3, app).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Limit);
+    // Another app is unaffected.
+    host.spawn(&sh("true"), 4, 10_501).unwrap();
+    for o in 1..=4 {
+        host.close_owner(o);
+    }
+}
+
+/// Concurrent spawns can't overshoot the limit (check and insert are atomic).
+#[test]
+fn limit_holds_under_concurrent_spawns() {
+    let t = TempLayout::new("uid-race");
+    let host = std::sync::Arc::new(t.host().with_owner_limit(3));
+    let app = 10_600;
+    let threads: Vec<_> = (0..12)
+        .map(|i| {
+            let host = host.clone();
+            std::thread::spawn(move || host.spawn(&sh("sleep 30"), 100 + i, app).is_ok())
+        })
+        .collect();
+    let ok = threads
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .filter(|&b| b)
+        .count();
+    assert_eq!(ok, 3);
+    assert_eq!(host.live_count_of_uid(app), 3);
+    for i in 0..12 {
+        host.close_owner(100 + i);
+    }
+}
+
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks existence.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// A background child left behind by an exited leader is still counted and
+/// is hung up by close().
+#[test]
+fn background_children_die_with_close() {
+    let t = TempLayout::new("orphan");
+    let host = t.host();
+    let pidfile = t.layout.home().join("bgpid");
+    let script = format!(
+        "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; exit 0",
+        pidfile.display()
+    );
+    let s = host.spawn(&sh(&script), 1, uid(1)).unwrap();
+    let h = s.handle;
+    drop(s);
+    assert_eq!(wait_exit(&host, h).code_and_signal(), (0, 0));
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(pid_alive(pid));
+    assert_eq!(host.live_count(), 1, "the orphaned group still counts");
+    host.close(h).unwrap();
+    let start = Instant::now();
+    while pid_alive(pid) {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "background child survived close"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(host.live_count(), 0);
+}
+
+/// Same through close_owner (client died).
+#[test]
+fn background_children_die_with_their_owner() {
+    let t = TempLayout::new("orphan-owner");
+    let host = t.host();
+    let pidfile = t.layout.home().join("bgpid");
+    let script = format!(
+        "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; exit 0",
+        pidfile.display()
+    );
+    let h = host.spawn(&sh(&script), 7, uid(7)).unwrap().handle;
+    wait_exit(&host, h);
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(host.close_owner(7), 1);
+    let start = Instant::now();
+    while pid_alive(pid) {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "background child survived its owner"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A symlink pointing at $HOME is an entry inside $HOME, not $HOME itself.
+#[test]
+fn symlink_to_home_is_a_plain_entry() {
+    let t = TempLayout::new("homelink");
+    let home = t.layout.home();
+    symlink(&home, home.join("homelink")).unwrap();
+    let f = t.host().files();
+    let st = f.stat("homelink").unwrap();
+    assert_eq!(st.file_type, FileType::Symlink);
+    assert_eq!(st.name, "homelink");
+    f.rename("homelink", "renamed").unwrap();
+    f.delete("renamed", false).unwrap();
+    assert!(home.is_dir(), "$HOME itself must survive");
+    assert_eq!(f.list("", 0, 10).unwrap(), vec![]);
+}
+
+/// Opening a FIFO fails fast instead of blocking (no peer).
+#[test]
+fn open_refuses_fifos_without_blocking() {
+    let t = TempLayout::new("fifo");
+    let fifo = t.layout.home().join("pipe");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let f = t.host().files();
+    let start = Instant::now();
+    for mode in [OpenMode::Read, OpenMode::Write, OpenMode::ReadWrite] {
+        let err = f.open("pipe", mode).unwrap_err();
+        assert!(
+            matches!(err.code, ErrorCode::InvalidArgument | ErrorCode::Io),
+            "{mode:?}: {err:?}"
+        );
+    }
+    assert!(start.elapsed() < Duration::from_secs(2));
+    // Regular files still open in blocking mode.
+    std::fs::write(t.layout.home().join("plain"), "x").unwrap();
+    let fd = f.open("plain", OpenMode::Read).unwrap();
+    let flags = rustix::fs::fcntl_getfl(&fd).unwrap();
+    assert!(!flags.contains(rustix::fs::OFlags::NONBLOCK));
+}
+
+#[test]
+fn chmod_is_confined() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = TempLayout::new("chmod");
+    let f = t.host().files();
+    std::fs::write(t.layout.home().join("run.sh"), "#!/bin/sh\n").unwrap();
+    f.chmod("run.sh", 0o755).unwrap();
+    let mode = std::fs::metadata(t.layout.home().join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7777, 0o755);
+    let secret = t.layout.files_dir().join("secret");
+    std::fs::write(&secret, "s").unwrap();
+    symlink(&secret, t.layout.home().join("escape")).unwrap();
+    assert_eq!(
+        f.chmod("escape", 0o777).unwrap_err().code,
+        ErrorCode::OutsideHome
+    );
+    assert_eq!(
+        f.chmod("../secret", 0o777).unwrap_err().code,
         ErrorCode::OutsideHome
     );
 }

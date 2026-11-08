@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.Process
 import android.os.RemoteException
 import android.util.Log
 import dev.ferrux.api.ApiErrors
@@ -45,24 +46,41 @@ internal object ApiRegistry {
 
     @Volatile private var dispatcher: Thread? = null
 
+    /**
+     * Rejects binders that live in Ferrux's own process (e.g. a client passing back
+     * Ferrux's `IFerruxApi` binder as its callback). `linkToDeath` is a no-op for them,
+     * so cleanup would never run, and calls on them would execute inside Ferrux.
+     */
+    private fun requireRemote(binder: IBinder, what: String) {
+        if (binder is Binder || Binder.getCallingPid() == Process.myPid()) {
+            throw SecurityException("$what must be a binder of the calling app")
+        }
+    }
+
     /** The owner record for [callback], created (and linked to its death) on first use. */
     @Synchronized
     fun ownerFor(callback: IProcessCallback, uid: Int): Owner {
         val binder = callback.asBinder()
+        requireRemote(binder, "callback")
         owners[binder]?.let { return it }
         val owner = Owner(nextOwner.getAndIncrement(), uid, callback)
         owner.death = IBinder.DeathRecipient { ownerDied(binder) }
+        // Registered before linkToDeath: if the client dies in between, ownerDied
+        // finds the record and cleans up.
+        owners[binder] = owner
+        ownersById[owner.id] = owner
         try {
             binder.linkToDeath(owner.death, 0)
         } catch (e: RemoteException) {
+            owners.remove(binder)
+            ownersById.remove(owner.id)
             throw IllegalStateException("client already died", e)
         }
-        owners[binder] = owner
-        ownersById[owner.id] = owner
         ensureDispatcher()
         return owner
     }
 
+    @Synchronized
     private fun ownerDied(binder: IBinder) {
         val owner = owners.remove(binder) ?: return
         ownersById.remove(owner.id)
@@ -80,15 +98,18 @@ internal object ApiRegistry {
     }
 
     /** Registers a keep-alive token; false if Android refused the foreground service. */
+    @Synchronized
     fun acquireKeepAlive(context: Context, token: IBinder, uid: Int, reason: String): Boolean {
+        requireRemote(token, "keep-alive token")
         if (keepAlives.containsKey(token)) return true
         val death = IBinder.DeathRecipient { releaseKeepAlive(token) }
+        keepAlives[token] = KeepAlive(uid, reason, death)
         try {
             token.linkToDeath(death, 0)
         } catch (e: RemoteException) {
+            keepAlives.remove(token)
             throw IllegalStateException("client already died", e)
         }
-        keepAlives[token] = KeepAlive(uid, reason, death)
         Log.i(FerruxApplication.TAG, "keep-alive from uid $uid: $reason")
         if (!refresh(context)) {
             releaseKeepAlive(token)
@@ -97,6 +118,7 @@ internal object ApiRegistry {
         return true
     }
 
+    @Synchronized
     fun releaseKeepAlive(token: IBinder) {
         val ka = keepAlives.remove(token) ?: return
         runCatching { token.unlinkToDeath(ka.death, 0) }
@@ -134,21 +156,30 @@ internal object ApiRegistry {
         }
     }
 
-    /** Delivers exits to the owning clients' callbacks. */
+    /**
+     * Delivers exits to the owning clients' callbacks. Nothing a client does may
+     * kill this thread or, through an uncaught exception, the whole Ferrux process
+     * with everyone's sessions: every delivery and every round is guarded.
+     */
     private fun dispatchExits() {
         while (true) {
-            val exits = ApiNative.awaitExits(DISPATCH_TIMEOUT_MS)
-            for (i in exits.indices step 4) {
-                val handle = exits[i]
-                val owner = ownersById[exits[i + 1]] ?: continue
-                try {
-                    owner.callback.onExit(handle, exits[i + 2].toInt(), exits[i + 3].toInt())
-                } catch (e: RemoteException) {
-                    Log.w(FerruxApplication.TAG, "onExit($handle) not delivered: $e")
+            try {
+                val exits = ApiNative.awaitExits(DISPATCH_TIMEOUT_MS)
+                for (i in exits.indices step 4) {
+                    val handle = exits[i]
+                    val owner = ownersById[exits[i + 1]] ?: continue
+                    try {
+                        owner.callback.onExit(handle, exits[i + 2].toInt(), exits[i + 3].toInt())
+                    } catch (t: Throwable) {
+                        Log.w(FerruxApplication.TAG, "onExit($handle) not delivered: $t")
+                    }
                 }
+                // Also picks up processes reaped after their handle was closed.
+                refresh(null)
+            } catch (t: Throwable) {
+                Log.e(FerruxApplication.TAG, "exit dispatcher error", t)
+                Thread.sleep(DISPATCH_TIMEOUT_MS.toLong())
             }
-            // Also picks up processes reaped after their handle was closed.
-            refresh(null)
         }
     }
 

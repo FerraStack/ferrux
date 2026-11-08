@@ -34,6 +34,7 @@ pub const API_NATIVES: &[NativeMethod<'static>] = &[
             rows: jint,
             cols: jint,
             owner: jlong,
+            uid: jint,
         ) -> jlong[],
         fn = natives::spawn,
     },
@@ -63,6 +64,7 @@ pub const API_NATIVES: &[NativeMethod<'static>] = &[
         fn = natives::open_file,
     },
     native_method! { static fn mkdirs(path: JString), fn = natives::mkdirs },
+    native_method! { static fn chmod(path: JString, mode: jint), fn = natives::chmod },
     native_method! { static fn rename(from: JString, to: JString), fn = natives::rename },
     native_method! {
         static fn delete(path: JString, recursive: jboolean),
@@ -162,6 +164,7 @@ mod natives {
         rows: jint,
         cols: jint,
         owner: jlong,
+        uid: jint,
     ) -> JResult<JLongArray<'local>> {
         let req = SpawnRequest {
             argv: string_array(env, &argv)?,
@@ -172,7 +175,8 @@ mod natives {
             merge_stderr,
         };
         let out = env.new_long_array(6)?;
-        let Some(spawned) = api(env, None, host().spawn(&req, handle(owner)).map(Some))? else {
+        let spawned = host().spawn(&req, handle(owner), uid as u32).map(Some);
+        let Some(spawned) = api(env, None, spawned)? else {
             return Ok(out);
         };
         let fds = match spawned.io {
@@ -191,7 +195,15 @@ mod natives {
             fds[2],
             fds[3],
         ];
-        out.set_region(env, 0, &values)?;
+        if let Err(e) = out.set_region(env, 0, &values) {
+            // Nobody will ever own these: close the fds and hang up the process.
+            for fd in fds.into_iter().filter(|&fd| fd >= 0) {
+                // SAFETY: the fds came from `into_raw_fd` above and were never shared.
+                drop(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd as i32) });
+            }
+            let _ = host().close(spawned.handle);
+            return Err(e);
+        }
         Ok(out)
     }
 
@@ -337,6 +349,11 @@ mod natives {
     pub fn mkdirs(env: &mut Env<'_>, _: JClass<'_>, path: JString<'_>) -> JResult<()> {
         let path = path.try_to_string(env)?;
         api(env, (), host().files().mkdirs(&path).map(|_| ()))
+    }
+
+    pub fn chmod(env: &mut Env<'_>, _: JClass<'_>, path: JString<'_>, mode: jint) -> JResult<()> {
+        let path = path.try_to_string(env)?;
+        api(env, (), host().files().chmod(&path, mode as u32))
     }
 
     pub fn rename(

@@ -52,4 +52,8 @@ interface IFerruxApi {
     // Lifecycle (§6.7). `token` is a binder the client owns.
     void acquireKeepAlive(IBinder token, String reason) = 16;
     void releaseKeepAlive(IBinder token) = 17;
+
+    // Sets permission bits (mode & 07777) under $HOME, e.g. to keep a script's +x
+    // across an atomic rewrite (§6.5).
+    void chmod(String path, int mode) = 18;
 }

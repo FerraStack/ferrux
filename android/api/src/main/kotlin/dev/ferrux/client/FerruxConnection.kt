@@ -13,6 +13,7 @@ import dev.ferrux.api.SpawnRequest
 import java.io.Closeable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -103,6 +104,21 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
         return withContext(Dispatchers.IO) { FerruxException.wrap { block(api) } }
     }
 
+    /**
+     * A call that creates something we must own (process, fd, keep-alive): if the
+     * caller is cancelled while it runs, the result is released instead of leaked.
+     */
+    internal suspend fun <T> callOwned(block: (IFerruxApi) -> T, release: (T) -> Unit): T {
+        if (_state.value != ConnectionState.Connected) throw FerruxException.Disconnected()
+        return completeOrRelease(block = { FerruxException.wrap { block(api) } }, release = release)
+    }
+
+    private fun register(process: FerruxProcess): FerruxProcess {
+        processes[process.handle] = process
+        earlyExits.remove(process.handle)?.let(process::onExit)
+        return process
+    }
+
     /** Fresh `getInfo()` (e.g. to see the bootstrap state change). */
     suspend fun refreshInfo(): FerruxInfo = call { it.info }.also { info = it }
 
@@ -120,11 +136,7 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
                 cols = it.cols
             }
         }
-        val result = call { it.spawn(request, callback) }
-        val process = FerruxProcess(this, result)
-        processes[process.handle] = process
-        earlyExits.remove(process.handle)?.let(process::onExit)
-        return process
+        return callOwned({ register(FerruxProcess(this, it.spawn(request, callback))) }) { it.close() }
     }
 
     /**
@@ -138,13 +150,22 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
         stdin: ByteArray? = null,
     ): ExecResult = spawn(ProcessSpec(argv, env = env, cwd = cwd)).use { p ->
         coroutineScope {
-            val out = async(Dispatchers.IO) { p.stdout!!.readBytes() }
-            val err = async(Dispatchers.IO) { p.stderr!!.readBytes() }
-            withContext(Dispatchers.IO) {
-                p.stdin!!.use { s -> stdin?.let(s::write) }
+            // Blocking reads/writes can't be cancelled; on cancellation the process is
+            // closed (Ferrux hangs it up), which ends them with EOF/EPIPE, so the scope
+            // finishes promptly instead of waiting for the program to exit.
+            val input = async(Dispatchers.IO) {
+                runCatching { p.stdin!!.use { s -> stdin?.let(s::write) } }
             }
-            val status = p.await()
-            ExecResult(out.await().decodeToString(), err.await().decodeToString(), status)
+            val out = async(Dispatchers.IO) { runCatching { p.stdout!!.readBytes() }.getOrDefault(ByteArray(0)) }
+            val err = async(Dispatchers.IO) { runCatching { p.stderr!!.readBytes() }.getOrDefault(ByteArray(0)) }
+            try {
+                val status = p.await()
+                input.await()
+                ExecResult(out.await().decodeToString(), err.await().decodeToString(), status)
+            } catch (e: CancellationException) {
+                p.close()
+                throw e
+            }
         }
     }
 
@@ -153,11 +174,9 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
 
     /** Attaches to a Ferrux session; the process's [FerruxProcess.pty] is a socket. */
     suspend fun attach(sessionId: Long, rows: Int, cols: Int): FerruxProcess {
-        val result = call { it.attachSession(sessionId, rows, cols, callback) }
-        val process = FerruxProcess.attached(this, result)
-        processes[process.handle] = process
-        earlyExits.remove(process.handle)?.let(process::onExit)
-        return process
+        return callOwned({
+            register(FerruxProcess.attached(this, it.attachSession(sessionId, rows, cols, callback)))
+        }) { it.close() }
     }
 
     /** File operations under Ferrux's `$HOME`. */
@@ -169,7 +188,8 @@ class FerruxConnection internal constructor(private val context: Context) : Clos
      */
     suspend fun keepAlive(reason: String): Closeable {
         val token = Binder("ferrux-keepalive")
-        call { it.acquireKeepAlive(token, reason) }
+        // A keep-alive lost to cancellation would pin Ferrux in the foreground.
+        callOwned({ it.acquireKeepAlive(token, reason) }) { runCatching { api.releaseKeepAlive(token) } }
         val released = AtomicBoolean(false)
         return Closeable {
             if (released.compareAndSet(false, true) && _state.value == ConnectionState.Connected) {

@@ -167,8 +167,11 @@ impl Files {
     pub fn resolve_nofollow(&self, path: &str) -> Result<PathBuf> {
         let home = self.home()?;
         let abs = self.absolute(path)?;
-        // Names `$HOME` itself (e.g. "", ".", "sub/.."), whose parent is outside.
-        if fs::canonicalize(&abs).is_ok_and(|p| p == home) {
+        // Names `$HOME` itself (e.g. "", ".", "sub/.."), whose parent is
+        // outside. A symlink that points at `$HOME` is not `$HOME`: it is a
+        // file inside it, handled below.
+        let final_is_symlink = fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink());
+        if !final_is_symlink && fs::canonicalize(&abs).is_ok_and(|p| p == home) {
             return Ok(home);
         }
         match abs.components().next_back() {
@@ -241,8 +244,9 @@ impl Files {
             .collect())
     }
 
-    /// Opens a file. A final symlink is followed only if its target is
-    /// inside `$HOME`; new files get mode 0600.
+    /// Opens a regular file. A final symlink is followed only if its target
+    /// is inside `$HOME`; new files get mode 0600. FIFOs, sockets and device
+    /// nodes are refused, so a Binder thread can never block in `open`.
     pub fn open(&self, path: &str, mode: OpenMode) -> Result<OwnedFd> {
         let mut p = self.resolve_nofollow(path)?;
         if fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -254,13 +258,38 @@ impl Files {
                 format!("{path}: is a directory"),
             ));
         }
+        // O_NONBLOCK: opening a FIFO without a peer would block forever.
         let file = mode
             .options()
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
             .open(&p)
             .map_err(|e| HostError::io(&e, p.display()))?;
-        Ok(file.into())
+        let meta = file
+            .metadata()
+            .map_err(|e| HostError::io(&e, p.display()))?;
+        if !meta.file_type().is_file() {
+            return Err(HostError::new(
+                ErrorCode::InvalidArgument,
+                format!("{path}: not a regular file"),
+            ));
+        }
+        let fd: OwnedFd = file.into();
+        // Back to blocking I/O for the client.
+        let flags =
+            rustix::fs::fcntl_getfl(&fd).map_err(|e| HostError::io(&e.into(), p.display()))?;
+        rustix::fs::fcntl_setfl(&fd, flags - rustix::fs::OFlags::NONBLOCK)
+            .map_err(|e| HostError::io(&e.into(), p.display()))?;
+        Ok(fd)
+    }
+
+    /// Sets the permission bits (`mode & 0o7777`) of a file or directory; a
+    /// final symlink is followed if its target is inside `$HOME`.
+    pub fn chmod(&self, path: &str, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let p = self.resolve_follow(path)?;
+        fs::set_permissions(&p, fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|e| HostError::io(&e, p.display()))
     }
 
     /// `mkdir -p`. Existing ancestors are canonicalised and must be inside

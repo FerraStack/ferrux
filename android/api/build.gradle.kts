@@ -42,6 +42,9 @@ android {
 
 dependencies {
     api(libs.kotlinx.coroutines.android)
+
+    // Plain JVM tests for the pure-Kotlin parts (cancellation ownership, path logic).
+    testImplementation(libs.junit)
 }
 
 

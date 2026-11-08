@@ -10,7 +10,10 @@ package dev.ferrux.app.api
  * `dev.ferrux.api.ApiErrors`), which Binder passes to the client unchanged. Returned descriptors are owned by the caller.
  */
 object ApiNative {
-    /** Returns `[handle, pid, stdin, stdout, stderr, pty]`; absent fds are -1. */
+    /**
+     * Returns `[handle, pid, stdin, stdout, stderr, pty]`; absent fds are -1. [uid] is
+     * the calling app: the process limit applies per app, not per connection.
+     */
     @JvmStatic external fun spawn(
         argv: Array<String>,
         env: Array<String>,
@@ -21,6 +24,7 @@ object ApiNative {
         rows: Int,
         cols: Int,
         owner: Long,
+        uid: Int,
     ): LongArray
 
     @JvmStatic external fun resize(handle: Long, rows: Int, cols: Int)
@@ -56,6 +60,9 @@ object ApiNative {
     @JvmStatic external fun openFile(path: String, mode: String): Int
 
     @JvmStatic external fun mkdirs(path: String)
+
+    /** Sets the permission bits (`mode & 0o7777`). */
+    @JvmStatic external fun chmod(path: String, mode: Int)
 
     @JvmStatic external fun rename(from: String, to: String)
 

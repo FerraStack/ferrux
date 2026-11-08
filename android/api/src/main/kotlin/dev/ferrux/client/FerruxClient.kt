@@ -92,7 +92,10 @@ object FerruxClient {
 
             override fun onServiceDisconnected(name: ComponentName) = connection.onDisconnected()
 
-            override fun onBindingDied(name: ComponentName) = connection.onDisconnected()
+            override fun onBindingDied(name: ComponentName) {
+                // Before the first connection this would otherwise leave connect() waiting forever.
+                if (!binder.completeExceptionally(FerruxException.Disconnected())) connection.onDisconnected()
+            }
 
             override fun onNullBinding(name: ComponentName) {
                 binder.completeExceptionally(FerruxException.Outdated(0, minApi))
