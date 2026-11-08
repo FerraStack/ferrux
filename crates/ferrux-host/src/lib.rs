@@ -150,8 +150,12 @@ struct Proc {
     pid: i32,
     /// Set (under the lock) when the child has been reaped.
     reaped: Mutex<bool>,
-    /// Our duplicate of the pty master (pty mode only).
-    master: Option<PtyMaster>,
+    /// Whether this is a pty process (even after `master` was dropped).
+    is_pty: bool,
+    /// Our duplicate of the pty master, for resize and the foreground job.
+    /// Dropped once the program exited, so an exited handle the client never
+    /// closes doesn't pin a pty (issue #39).
+    master: Mutex<Option<PtyMaster>>,
 }
 
 impl Proc {
@@ -193,11 +197,21 @@ impl Proc {
         groups
     }
 
+    fn master(&self) -> MutexGuard<'_, Option<PtyMaster>> {
+        self.master.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn foreground_group(&self) -> Option<i32> {
-        let master = self.master.as_ref()?;
-        rustix::termios::tcgetpgrp(master)
+        let master = self.master();
+        rustix::termios::tcgetpgrp(master.as_ref()?)
             .ok()
             .map(|p| p.as_raw_nonzero().get())
+    }
+
+    /// Whether Ferrux still holds a pty master for this process.
+    #[cfg(test)]
+    fn holds_master(&self) -> bool {
+        self.master().is_some()
     }
 }
 
@@ -332,7 +346,8 @@ impl Host {
             uid,
             pid,
             reaped: Mutex::new(false),
-            master,
+            is_pty: master.is_some(),
+            master: Mutex::new(master),
         });
         self.inner.procs().insert(handle, proc.clone());
         let inner = self.inner.clone();
@@ -456,9 +471,16 @@ impl Host {
     /// Sets the pty window size (sends `SIGWINCH`).
     pub fn resize(&self, handle: Handle, rows: u16, cols: u16) -> Result<()> {
         let proc = self.get(handle)?;
-        let master = proc.master.as_ref().ok_or_else(|| {
-            HostError::new(ErrorCode::Unsupported, "not a pty process; cannot resize")
-        })?;
+        if !proc.is_pty {
+            return Err(HostError::new(
+                ErrorCode::Unsupported,
+                "not a pty process; cannot resize",
+            ));
+        }
+        let master = proc.master();
+        let master = master
+            .as_ref()
+            .ok_or_else(|| HostError::new(ErrorCode::InvalidArgument, "the process has exited"))?;
         master
             .resize(WinSize::new(rows.max(1), cols.max(1)))
             .map_err(|e| HostError::io(&e, "resize"))
@@ -579,6 +601,8 @@ fn wait_child(handle: Handle, child: &Child, proc: &Proc, inner: &Inner) {
         *reaped = true;
         status
     };
+    // The terminal is the client's now; ours only served resize/signals.
+    drop(proc.master().take());
     let status = match status {
         Ok(Some(s)) => s,
         Ok(None) => {

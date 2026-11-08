@@ -32,6 +32,19 @@ class FerruxApiService : Service() {
 
     override fun onBind(intent: Intent): IBinder = binder
 
+    /**
+     * Called once no client is bound any more. Processes are tied to a client's
+     * binding as well as to its callback binder (docs/API.md §6.6), so clean up.
+     * Returns true so that the next binding is reported ([onRebind]) and the next
+     * time the last client leaves, this runs again.
+     */
+    override fun onUnbind(intent: Intent): Boolean {
+        ApiRegistry.closeAll()
+        return true
+    }
+
+    override fun onRebind(intent: Intent) = Unit
+
     private fun enforce(): Int {
         if (checkCallingPermission(permission) != PackageManager.PERMISSION_GRANTED) {
             throw SecurityException("Ferrux API requires $permission")

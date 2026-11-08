@@ -204,6 +204,49 @@ class ApiCrossAppTest {
         }
     }
 
+    /**
+     * Issue #39: a client that unbinds without closing its processes (and stays alive,
+     * so its callback binder doesn't die) must not leave them running in Ferrux.
+     */
+    @Test
+    fun unbindingClosesProcesses() = runBlocking {
+        val probe = granted()
+        val before = probe.refreshInfo().liveProcesses
+        val bound = java.util.concurrent.LinkedBlockingQueue<android.os.IBinder>()
+        val raw = object : android.content.ServiceConnection {
+            override fun onServiceConnected(name: android.content.ComponentName, service: android.os.IBinder) {
+                bound.add(service)
+            }
+
+            override fun onServiceDisconnected(name: android.content.ComponentName) {}
+        }
+        // Kept alive by this test for the whole time: only the unbind can clean up.
+        val callback = object : dev.ferrux.api.IProcessCallback.Stub() {
+            override fun onExit(handle: Long, exitCode: Int, signal: Int) {}
+        }
+        // The probe connection must not count as "still bound": close it first.
+        probe.close()
+        conn = null
+        assertTrue(context.bindService(FerruxClient.bindIntent(), raw, android.content.Context.BIND_AUTO_CREATE))
+        val api = dev.ferrux.api.IFerruxApi.Stub.asInterface(bound.poll(TIMEOUT, java.util.concurrent.TimeUnit.MILLISECONDS)!!)
+        val result = api.spawn(
+            dev.ferrux.api.SpawnRequest().apply { argv = arrayOf("sh", "-c", "sleep 60") },
+            callback,
+        )
+        listOf(result.stdin, result.stdout, result.stderr).forEach { it?.close() }
+        assertTrue(api.info.liveProcesses > before)
+        context.unbindService(raw)
+
+        val check = withTimeout(TIMEOUT) { FerruxClient.connect(context) }
+        conn = check
+        val deadline = System.currentTimeMillis() + TIMEOUT
+        while (check.refreshInfo().liveProcesses > before) {
+            if (System.currentTimeMillis() > deadline) fail("processes survived the unbind")
+            Thread.sleep(250)
+        }
+        assertNotNull(callback) // still alive: the cleanup came from the unbind
+    }
+
     /** Holds a keep-alive for a while; ci-api.sh checks Ferrux's service is in the foreground meanwhile. */
     @Test
     fun keepAliveHold() = runBlocking {

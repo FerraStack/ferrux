@@ -89,6 +89,27 @@ internal object ApiRegistry {
         refresh(null)
     }
 
+    /**
+     * Every client has unbound (`Service.onUnbind`): hang up everything spawned
+     * through the API and drop all keep-alives (issue #39). Without this, a client
+     * that unbinds but keeps its process alive would leave its processes running.
+     */
+    @Synchronized
+    fun closeAll() {
+        for ((binder, owner) in owners.entries.toList()) {
+            runCatching { binder.unlinkToDeath(owner.death, 0) }
+            val n = ApiNative.closeOwner(owner.id)
+            if (n > 0) Log.i(FerruxApplication.TAG, "api clients unbound; closed $n process(es) of uid ${owner.uid}")
+        }
+        owners.clear()
+        ownersById.clear()
+        for ((token, ka) in keepAlives.entries.toList()) {
+            runCatching { token.unlinkToDeath(ka.death, 0) }
+        }
+        keepAlives.clear()
+        refresh(null)
+    }
+
     /** Throws `ERR_NO_SUCH_HANDLE` unless [handle] belongs to a client with [uid]. */
     fun checkHandle(handle: Long, uid: Int) {
         val owner = ownersById[ApiNative.ownerOf(handle)]
