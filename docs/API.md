@@ -548,8 +548,9 @@ binder passed with it (it is required, never null). Ferrux calls
 |---|---|
 | `close(handle)` on a spawned process | `SIGHUP` to the process group (and the PTY's foreground group), `SIGKILL` 3 s later if still alive, closes its fds, forgets the handle. Same as closing a Ferrux tab. This also applies after the program itself exited: background children it left in its process group (`sleep 30 &`) are hung up too. |
 | `close(handle)` on an attachment | Detaches; the shared session keeps running. |
-| Client process dies or unbinds (callback binder dies) | `close` on every handle that callback owns. Shared sessions survive. |
-| Program exits | Reaped by a per-pid waiter thread (never `waitpid(-1)`); `onExit` is sent; the handle stays valid for `close` until the client closes it or dies. |
+| Client process dies (callback binder dies) | `close` on every handle that callback owns. Shared sessions survive. |
+| The last client unbinds (`onUnbind`) | `close` on every handle of every client, and all keep-alive tokens are dropped. Android reports unbinding only once no client is bound, so with several clients, one client unbinding alone doesn't trigger this; `ferrux-client`'s `close()` closes its own processes first anyway. Shared sessions survive. |
+| Program exits | Reaped by a per-pid waiter thread (never `waitpid(-1)`); `onExit` is sent; the handle stays valid for `close` until the client closes it or dies. Ferrux drops its duplicate of the PTY master at that point; `resize` on the handle then fails. |
 | Ferrux's process dies (low memory, user force-stop, update) | Android kills the whole app process group, so all spawned programs die too. Clients see EOF on every fd and `onServiceDisconnected`/`binderDied`. Nothing survives a Ferrux restart in v1. |
 | `kill(handle)` | `SIGKILL` to the process group. |
 | `signal(handle, signo)` | That signal to the process group (to the PTY's foreground group for PTYs: `SIGINT` reaches the running command, not just the shell). |

@@ -601,3 +601,30 @@ fn chmod_is_confined() {
         ErrorCode::OutsideHome
     );
 }
+
+/// Issue #39: an exited pty process doesn't keep Ferrux's master duplicate open
+/// until the client closes the handle.
+#[test]
+fn exited_pty_releases_our_master() {
+    let t = TempLayout::new("pty-release");
+    let host = t.host();
+    let mut req = sh("exit 0");
+    req.pty = Some(WinSize::new(24, 80));
+    let s = host.spawn(&req, 1, uid(1)).unwrap();
+    let handle = s.handle;
+    let proc = host.inner.procs().get(&handle).cloned().unwrap();
+    assert!(proc.holds_master());
+    wait_exit(&host, handle);
+    assert!(
+        !proc.holds_master(),
+        "master duplicate still held after exit"
+    );
+    assert_eq!(
+        host.resize(handle, 10, 10).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    // The handle itself stays valid until closed.
+    assert_eq!(host.owner_of(handle), Some(1));
+    host.close(handle).unwrap();
+    drop(s.io);
+}
