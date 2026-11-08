@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.LinearLayout
 import android.widget.TextView
 import dev.ferrux.client.FerruxClient
@@ -44,7 +45,7 @@ class SampleActivity : Activity() {
             typeface = Typeface.MONOSPACE
             setTextColor(Color.WHITE)
             setBackgroundColor(0xFF1C2029.toInt())
-            setPadding(24, 48, 24, 16)
+            setPadding(24, 16, 24, 16)
             text = "Connecting to Ferrux…"
         }
         terminal = TerminalView(this)
@@ -54,6 +55,12 @@ class SampleActivity : Activity() {
                 setBackgroundColor(0xFF0E1116.toInt())
                 addView(status, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 addView(terminal, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                // Edge-to-edge (targetSdk 35+): keep content clear of the system bars and the IME.
+                setOnApplyWindowInsetsListener { v, insets ->
+                    val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+                    v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                    WindowInsets.CONSUMED
+                }
             },
         )
         TerminalNative.load()?.let {
