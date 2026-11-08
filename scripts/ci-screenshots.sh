@@ -626,13 +626,35 @@ adb shell "run-as $PKG sh -c 'cat > files/home/osc52.sh'" < "$HERE/ci-osc52.sh"
 clip_before="$(ui_field clipboard)"
 type_line 'sh%sosc52.sh'
 expect_screen '^osc52 sent$' "the program sent OSC 52"
-hide_ime
-wait_node 'wants to copy 8 characters to the clipboard' > /dev/null
+# hide_ime can't be used here: it waits for the full row count, which the snackbar
+# now (rightly) takes away until it times out. Ask the IME service instead.
+if ime_shown; then adb shell input keyevent KEYCODE_BACK; fi
+for i in $(seq 1 20); do
+  ime_shown || break
+  sleep 0.5
+done
+ime_shown && fail "could not hide the soft keyboard"
+rows_before_ask="$ROWS_FULL"
+snack="$(wait_node 'wants to copy 8 characters to the clipboard')"
 log "ok: permission snackbar shown"
+# The snackbar takes its own space: the terminal shrinks and the prompt line
+# (the cursor row) stays above it.
+for i in $(seq 1 20); do
+  rows_ask="$(ui_field rows)"
+  [ "$rows_ask" -lt "$rows_before_ask" ] && break
+  sleep 0.5
+done
+[ "$rows_ask" -lt "$rows_before_ask" ] || fail "terminal did not shrink for the snackbar ($rows_before_ask -> $rows_ask rows)"
+snack_top="$(printf '%s' "$snack" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]' | grep -oE '[0-9]+\]$' | tr -d ']')"
+read -r _ cursor_bottom <<< "$(cell_xy "$(ui_field cursor | cut -d, -f1)" 0)"
+cursor_bottom=$((cursor_bottom + $(ui_field cell | cut -d, -f2 | cut -d. -f1) / 2))
+[ "$cursor_bottom" -le "$snack_top" ] || fail "the snackbar (top $snack_top) covers the cursor row (bottom $cursor_bottom)"
+log "ok: $rows_before_ask -> $rows_ask rows; cursor row ends at y=$cursor_bottom, snackbar text starts at y=$snack_top"
 expect_ui clipboard "^$clip_before\$" "the clipboard is untouched until allowed"
 shot 14-osc52-ask
 tap_text Allow
 expect_ui clipboard '^OSC52-OK$' "Allow copied the program's text"
+expect_ui rows "^$ROWS_FULL\$" "the terminal is full height again"
 
 log "16: URLs are detected; tapping a link offers Open link / Copy link"
 run_line 'clear'

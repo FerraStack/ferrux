@@ -90,8 +90,9 @@ Scrolling:
 
 A program can write the clipboard with OSC 52 (`printf "\e]52;c;<base64>\a"`), as tmux, vim and
 ssh sessions do. Any program can, even `cat` of an untrusted file, so Ferrux asks
-first: "Session 1 wants to copy 8 characters to the clipboard". Writes over 1 MiB are
-ignored.
+first: "Session 1 wants to copy 8 characters to the clipboard". The question appears below
+the terminal, which shrinks while it is shown, so it never covers the line you are typing
+on. Writes over 1 MiB are ignored.
 
 Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font size
 is saved. Switching to another app and back keeps the terminal as it was, including the

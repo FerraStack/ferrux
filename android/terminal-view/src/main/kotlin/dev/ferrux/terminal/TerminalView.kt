@@ -938,6 +938,7 @@ class TerminalView @JvmOverloads constructor(
             "links" to links.joinToString("|") { "${it.start}-${it.end}=${it.uri}" },
             "linkMenu" to if (linkMode != null) linkMenuTitles.joinToString("|") else "",
             "linkMenuUri" to linkMenuUri.orEmpty(),
+            "cursor" to "${snapshot[L.H_CURSOR_ROW]},${snapshot[L.H_CURSOR_COL]}",
         ) + selection.debugState()
     }
 

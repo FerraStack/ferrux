@@ -251,10 +251,12 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                     onOpen = { scope.launch { drawerState.open() } },
                     modifier = Modifier.align(Alignment.CenterStart),
                 )
-                SnackbarHost(
-                    snackbars,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 12.dp, vertical = 10.dp),
-                ) { data -> FerruxSnackbar(data) }
+            }
+            // Transient prompts (the OSC 52 question) get their own space below the
+            // terminal, which shrinks while one is shown, so the prompt line the user
+            // is typing on stays visible.
+            SnackbarHost(snackbars, modifier = Modifier.fillMaxWidth()) { data ->
+                FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
             }
             ExtraKeysRow(
                 layout = ExtraKeysLayout.Default,
@@ -273,9 +275,10 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
 
 /** A snackbar in the terminal's palette rather than Material's inverse colours. */
 @Composable
-private fun FerruxSnackbar(data: SnackbarData) {
+private fun FerruxSnackbar(data: SnackbarData, modifier: Modifier = Modifier) {
     Snackbar(
         data,
+        modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         containerColor = TerminalColors.ExtraKeysBackground,
         contentColor = TerminalColors.Foreground,
