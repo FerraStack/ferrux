@@ -181,7 +181,7 @@ See [docs/RESEARCH.md §12](docs/RESEARCH.md#12-mvp-milestones). Next up:
 
 - **M3:** bootstrap and packages via linker64 + termux-exec.
 - **M4:** selection, copy/paste, URLs, settings.
-- **M5:** the Ferride API.
+- **M5:** the Ferride API, designed in [docs/API.md](docs/API.md).
 
 ## License
 

@@ -486,6 +486,8 @@ Conversely, a **pure-Rust** app would cost the most in exactly the places where 
 | **2. Service + fd passing** ✅ | Ferrux exports a bound service (AIDL), protected by a **signature-level permission** (same FerraStack key, so granted automatically). A dangerous-level permission, opt-in like Termux's `allow-external-apps`, covers third-party apps. Ferride calls `openSession(argv, env, cwd, rows, cols)`; Ferrux spawns the process **in its own sandbox** and returns the **PTY master as a `ParcelFileDescriptor`**. Ferride runs `ferrux-term` + `ferrux-render` locally on that fd. `exec(argv) → stdin/stdout/stderr pipes + exit code` serves LSPs, builds and git. | **Recommended.** One prefix, one repo. Processes live in Ferrux and are protected by its foreground service. Zero-copy terminal I/O, and Ferride gets native-feeling terminals. |
 | 3. RUN_COMMAND intent | Fire-and-forget, Termux-compatible style; results via `PendingIntent` | Implement it as well, for automation (Tasker etc.), but it's too coarse for an IDE |
 
+The v1 API that implements this model is specified in [API.md](API.md).
+
 **Details to design and verify for model 2:**
 - **fd passing:** passing pipe fds across apps via Binder is routine (`ParcelFileDescriptor.createPipe`). Passing a **`/dev/ptmx` master fd** across apps *should* work, but SELinux/MLS rules for cross-app `fd use` on `ptmx_device` **must be verified in an M0 spike**. The fallback is a socketpair/pipe proxy owned by Ferrux, plus a resize RPC.
 - **Files:** Ferride needs to edit projects living in Ferrux's `$HOME`. Options:
