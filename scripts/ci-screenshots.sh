@@ -1011,5 +1011,33 @@ wait_for "keep screen on sets the window flag" screen_kept_on
 adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on false > /dev/null
 wait_for "turning it off clears the flag" not screen_kept_on
 
+log "25: screen reader: rows are text nodes, new output is announced politely"
+# `uiautomator events` is an accessibility client, like TalkBack: while it runs,
+# the terminal tracks its screen and announces new output, and we capture the
+# events. Only one UiAutomation client can run at a time, so the node tree is
+# dumped after it stops; the output node keeps its last announcement.
+adb shell uiautomator events > "$OUT/a11y-events.txt" 2>&1 &
+events_pid=$!
+sleep 2
+run_line 'true' # a first change sets the baseline that new output is measured from
+sleep 1
+type_line 'echo%sspeak%sthis%snow'
+expect_screen '^speak this now$' "output in the grid"
+sleep 2 # announcements wait for the screen to be quiet for a moment
+kill "$events_pid" 2> /dev/null || true
+wait "$events_pid" 2> /dev/null || true
+grep 'CONTENT_CHANGE_TYPE_TEXT' "$OUT/a11y-events.txt" | grep 'speak this now' > /dev/null ||
+  { echo "$(grep -c . "$OUT/a11y-events.txt" || true) event lines captured"; fail "no text-change event carried the new output"; }
+log "ok: a text-change event announced the new output"
+hide_ime
+row="$(wait_node 'text="speak this now"')"
+printf '%s' "$row" | grep 'class="android.widget.TextView"' > /dev/null || fail "the output row is not a text node: $row"
+log "ok: the output row is its own text node"
+out="$(wait_node 'resource-id="terminal-output"')"
+printf '%s' "$out" | grep 'speak this now' > /dev/null || fail "the live output node lacks the new output: $out"
+printf '%s' "$out" | grep -F 'echo speak' > /dev/null && fail "the typed command was announced again: $out"
+log "ok: the live output node holds the new output, not the typed command"
+shot 25-screen-reader
+
 check_crash
 log "all checks passed"
