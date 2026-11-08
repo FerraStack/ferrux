@@ -9,9 +9,11 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Resources
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -26,6 +28,12 @@ import kotlinx.coroutines.launch
  * Lifecycle: [createSession] (re)starts the service in the foreground; when the
  * last session ends, or the notification's Exit action is used, it leaves the
  * foreground and stops itself (it lingers only while an Activity is bound).
+ *
+ * The notification shows how many sessions there are, opens the app when tapped
+ * and has an Exit action that closes every session. It is posted with the
+ * `specialUse` foreground service type that Android 14+ requires. From Android 14 on
+ * the user can swipe it away; the service keeps running, and the notification comes
+ * back with the next change to the sessions.
  */
 class FerruxService : LifecycleService() {
 
@@ -52,7 +60,7 @@ class FerruxService : LifecycleService() {
             sessions.sessions.collect { list ->
                 if (list.isNotEmpty()) {
                     hadSessions = true
-                    notificationManager.notify(NOTIFICATION_ID, buildNotification(list.size))
+                    notificationManager.notify(NOTIFICATION_ID, buildNotification(list))
                 } else if (hadSessions) {
                     hadSessions = false
                     stopForeground(Service.STOP_FOREGROUND_REMOVE)
@@ -88,12 +96,19 @@ class FerruxService : LifecycleService() {
 
     /** Starts a session, promoting this service to the foreground first. */
     fun createSession(rows: Int = 24, cols: Int = 80): Long {
-        startForegroundService(Intent(this, FerruxService::class.java))
+        try {
+            startForegroundService(Intent(this, FerruxService::class.java))
+        } catch (e: IllegalStateException) {
+            // ForegroundServiceStartNotAllowedException (Android 12+): only possible if
+            // a session is created while the app is in the background. The session
+            // still works while the app is bound; it is just not protected.
+            Log.w(FerruxApplication.TAG, "cannot start the foreground service now", e)
+        }
         return sessions.create(rows, cols)
     }
 
     private fun goForeground() {
-        val notification = buildNotification(sessions.sessions.value.size)
+        val notification = buildNotification(sessions.sessions.value)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -105,30 +120,52 @@ class FerruxService : LifecycleService() {
         get() = getSystemService(NotificationManager::class.java)
 
     private fun createNotificationChannel() {
+        // Low importance: no sound or peeking, but visible in the shade (and on the
+        // lock screen, where it shows only the session count).
         val channel = NotificationChannel(
             CHANNEL_ID, getString(R.string.notification_channel), NotificationManager.IMPORTANCE_LOW,
-        ).apply { setShowBadge(false) }
+        ).apply {
+            description = getString(R.string.notification_channel_description)
+            setShowBadge(false)
+        }
         notificationManager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(count: Int): Notification {
+    private fun buildNotification(list: List<SessionInfo>): Notification {
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+            this, 0,
+            Intent(this, MainActivity::class.java)
+                .setAction(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val exit = PendingIntent.getService(
             this, 1, Intent(this, FerruxService::class.java).setAction(ACTION_EXIT), PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, CHANNEL_ID)
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
+            .setColor(getColor(R.color.ferrux_accent))
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.notification_text, count))
+            .setContentText(sessionSummary(resources, list))
             .setContentIntent(open)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setShowWhen(false)
+            .setLocalOnly(true)
             .addAction(
-                Notification.Action.Builder(null, getString(R.string.notification_exit), exit).build(),
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_close),
+                    getString(R.string.notification_exit),
+                    exit,
+                ).build(),
             )
-            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Show it at once rather than after Android 12's 10 s grace period.
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+        return builder.build()
     }
 
     companion object {
@@ -138,5 +175,12 @@ class FerruxService : LifecycleService() {
         const val ACTION_EXIT = "dev.ferrux.app.action.EXIT"
 
         fun bindIntent(context: Context) = Intent(context, FerruxService::class.java)
+
+        /** "1 session", "3 sessions", "3 sessions · 1 exited". */
+        fun sessionSummary(res: Resources, list: List<SessionInfo>): String {
+            val count = res.getQuantityString(R.plurals.notification_sessions, list.size, list.size)
+            val exited = list.count { it.exitCode != null }
+            return if (exited == 0) count else res.getString(R.string.notification_sessions_exited, count, exited)
+        }
     }
 }
