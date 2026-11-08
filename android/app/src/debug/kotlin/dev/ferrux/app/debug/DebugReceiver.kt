@@ -85,7 +85,7 @@ class DebugReceiver : BroadcastReceiver() {
             append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
             // Exit code per session, "-" while running.
             append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
-            append(" titles=").append(sessions.joinToString("|") { it.title })
+            append(" titles=").append(sessions.joinToString("|") { it.label })
             append("\n---\n")
             append(text)
             append('\n')

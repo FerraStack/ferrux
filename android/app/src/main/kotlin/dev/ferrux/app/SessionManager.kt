@@ -29,7 +29,29 @@ data class SessionInfo(
     val exitCode: Int? = null,
     /** The name given at creation ("Session 2"); a restart goes back to it. */
     val name: String = title,
-)
+    /** A name the user chose (drawer > Rename); it wins over [title], which programs set. */
+    val customName: String? = null,
+) {
+    /** What the session is called in the drawer and elsewhere. */
+    val label: String get() = customName ?: title
+}
+
+/** Pure list operations behind renaming and reordering sessions. */
+object SessionList {
+    /** A user-entered name, trimmed; blank means "no custom name" (back to the program's title). */
+    fun customName(input: String): String? = input.trim().takeIf { it.isNotEmpty() }?.take(MAX_NAME_LENGTH)
+
+    /** [list] with the session [id] moved [delta] places (clamped to the ends); unchanged if absent. */
+    fun moved(list: List<SessionInfo>, id: Long, delta: Int): List<SessionInfo> {
+        val from = list.indexOfFirst { it.id == id }
+        if (from < 0) return list
+        val to = (from + delta).coerceIn(0, list.size - 1)
+        if (to == from) return list
+        return list.toMutableList().apply { add(to, removeAt(from)) }
+    }
+
+    const val MAX_NAME_LENGTH = 64
+}
 
 /**
  * Kotlin-side registry of the native sessions owned by [FerruxService].
@@ -110,7 +132,9 @@ class SessionManager(private val context: Context) {
             TerminalNative.feedLocal(id, "\r\n" + context.getString(R.string.restart_failed, e.message.orEmpty()))
             return null
         }
-        _sessions.update { list -> list.map { if (it.id == id) SessionInfo(newId, title = old.name) else it } }
+        _sessions.update { list ->
+            list.map { if (it.id == id) SessionInfo(newId, title = old.name, customName = old.customName) else it }
+        }
         if (_current.value == id) _current.value = newId
         TerminalNative.destroySession(id)
         lastCwd.remove(id)
@@ -128,6 +152,16 @@ class SessionManager(private val context: Context) {
         return FerruxAppNative.createSession(
             FerruxAppNative.defaultShell(), emptyArray(), env, cwd ?: home.absolutePath, rows, cols,
         )
+    }
+
+    /** Names a session; a blank [name] goes back to the title its program sets. */
+    fun rename(id: Long, name: String) {
+        updateSession(id) { it.copy(customName = SessionList.customName(name)) }
+    }
+
+    /** Moves a session [delta] places in the list (the drawer's order and Ctrl+Alt+1…9). */
+    fun move(id: Long, delta: Int) {
+        _sessions.update { SessionList.moved(it, id, delta) }
     }
 
     fun select(id: Long) {
@@ -224,7 +258,7 @@ class SessionManager(private val context: Context) {
         when (FerruxSettings.get(context).clipboardWrites.value) {
             ClipboardPolicy.OFF -> Log.i(FerruxApplication.TAG, "OSC 52 write from session $id ignored")
             ClipboardPolicy.ALLOW -> setClipboard(text)
-            ClipboardPolicy.ASK -> _clipboardRequest.value = ClipboardRequest(id, session.title, text)
+            ClipboardPolicy.ASK -> _clipboardRequest.value = ClipboardRequest(id, session.label, text)
         }
     }
 

@@ -51,6 +51,23 @@ expect_screen() {
   fail "$2: /$1/ not found in terminal dump"
 }
 
+# titles: the sessions' names in drawer order, "|"-separated (they may contain spaces).
+titles() { dump_screen | head -n1 | sed 's/.* titles=//'; }
+
+# expect_titles <names> <what>: waits up to 10 s for the session names to be exactly <names>.
+expect_titles() {
+  local i t=""
+  for i in $(seq 1 20); do
+    t="$(titles)"
+    if [ "$t" = "$1" ]; then
+      log "ok: $2 ($t)"
+      return 0
+    fi
+    sleep 0.5
+  done
+  fail "$2: sessions are '$t', expected '$1'"
+}
+
 header_field() { dump_screen | head -n1 | tr ' ' '\n' | sed -n "s/^$1=//p"; }
 
 # The grid lines of the dump (no header).
@@ -1045,6 +1062,44 @@ printf '%s' "$out" | grep 'speak this now' > /dev/null || fail "the live output 
 printf '%s' "$out" | grep -F 'echo speak' > /dev/null && fail "the typed command was announced again: $out"
 log "ok: the live output node holds the new output, not the typed command"
 shot 25-screen-reader
+
+log "27: rename and reorder sessions from the drawer"
+hide_ime
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+for i in $(seq 1 20); do
+  before="$(titles)"
+  case "$before" in *'|'*) break ;; esac
+  sleep 0.5
+done
+case "$before" in *'|'*) ;; *) fail "expected at least two sessions, got '$before'" ;; esac
+last="${before##*|}"          # the new session, at the end
+rest="${before%|"$last"}"     # the ones before it
+prev="${rest##*|}"            # the one just before it
+log "sessions before: $before"
+tap_node 'content-desc="Sessions"'
+tap_node "content-desc=\"Options for $last\""
+tap_text 'Rename'
+wait_node 'class="android.widget.EditText"' > /dev/null
+# The field starts with the old name selected, so typing replaces it.
+for attempt in 1 2; do
+  adb shell input text build
+  sleep 1
+  node 'class="android.widget.EditText"' | grep 'text="build"' > /dev/null && break
+  echo "::warning::rename field shows '$(node 'class="android.widget.EditText"' | grep -oE ' text="[^"]*"')'; retyping"
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_A
+  adb shell input keyevent KEYCODE_DEL
+done
+node 'class="android.widget.EditText"' | grep 'text="build"' > /dev/null || fail "could not type the new name"
+tap_text 'Rename'
+expect_titles "$rest|build" "the session is renamed in place"
+tap_node 'content-desc="Options for build"'
+tap_text 'Move up'
+expected="${rest%"$prev"}build|$prev"
+expect_titles "$expected" "Move up put it one place higher"
+sleep 1
+shot 27-rename-reorder
+adb shell input keyevent KEYCODE_BACK # close the drawer
 
 check_crash
 log "all checks passed"

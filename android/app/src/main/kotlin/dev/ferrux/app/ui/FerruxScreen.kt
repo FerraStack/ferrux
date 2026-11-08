@@ -36,7 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -77,6 +77,18 @@ import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
 import dev.ferrux.app.SessionInfo
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import dev.ferrux.app.SessionManager
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
@@ -192,6 +204,8 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                     scope.launch { drawerState.close() }
                 },
                 onKill = manager::kill,
+                onRename = manager::rename,
+                onMove = manager::move,
                 onNew = {
                     onNewSession()
                     scope.launch { drawerState.close() }
@@ -400,8 +414,21 @@ private fun SessionDrawer(
     currentId: Long,
     onSelect: (Long) -> Unit,
     onKill: (Long) -> Unit,
+    onRename: (Long, String) -> Unit,
+    onMove: (Long, Int) -> Unit,
     onNew: () -> Unit,
 ) {
+    var renaming by remember { mutableStateOf<SessionInfo?>(null) }
+    renaming?.let { session ->
+        RenameDialog(
+            session = session,
+            onRename = { name ->
+                onRename(session.id, name)
+                renaming = null
+            },
+            onDismiss = { renaming = null },
+        )
+    }
     ModalDrawerSheet(Modifier.semantics { contentDescription = "Session drawer" }) {
         Text(
             stringResource(R.string.sessions),
@@ -411,12 +438,12 @@ private fun SessionDrawer(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f, fill = false)) {
-            items(sessions, key = { it.id }) { session ->
+            itemsIndexed(sessions, key = { _, session -> session.id }) { index, session ->
                 val exitCode = session.exitCode
                 NavigationDrawerItem(
                     label = {
                         Text(
-                            session.title,
+                            session.label,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = if (exitCode != null) TerminalColors.Muted else Color.Unspecified,
@@ -427,6 +454,13 @@ private fun SessionDrawer(
                     badge = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (exitCode != null) ExitBadge(exitCode)
+                            SessionMenu(
+                                session = session,
+                                canMoveUp = index > 0,
+                                canMoveDown = index < sessions.size - 1,
+                                onRename = { renaming = session },
+                                onMove = { delta -> onMove(session.id, delta) },
+                            )
                             IconButton(onClick = { onKill(session.id) }) {
                                 Icon(painterResource(R.drawable.ic_close), stringResource(R.string.kill_session))
                             }
@@ -445,6 +479,87 @@ private fun SessionDrawer(
             modifier = Modifier.padding(horizontal = 12.dp),
         )
     }
+}
+
+/** The ⋮ menu of a session in the drawer: rename, move up, move down. */
+@Composable
+private fun SessionMenu(
+    session: SessionInfo,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onRename: () -> Unit,
+    onMove: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(painterResource(R.drawable.ic_more_vert), stringResource(R.string.session_options, session.label))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.rename_session)) },
+                onClick = {
+                    open = false
+                    onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.move_session_up)) },
+                enabled = canMoveUp,
+                onClick = {
+                    open = false
+                    onMove(-1)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.move_session_down)) },
+                enabled = canMoveDown,
+                onClick = {
+                    open = false
+                    onMove(+1)
+                },
+            )
+        }
+    }
+}
+
+/** Names a session. The field starts with its current name, selected, ready to type over. */
+@Composable
+private fun RenameDialog(session: SessionInfo, onRename: (String) -> Unit, onDismiss: () -> Unit) {
+    var field by remember(session.id) {
+        mutableStateOf(TextFieldValue(session.label, selection = TextRange(0, session.label.length)))
+    }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.rename_session_title)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { field = it },
+                    label = { Text(stringResource(R.string.rename_session_name)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onRename(field.text) }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.rename_session_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TerminalColors.Muted,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onRename(field.text) }) { Text(stringResource(R.string.rename_session_confirm)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+        },
+    )
 }
 
 /**
