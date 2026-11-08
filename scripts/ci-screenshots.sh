@@ -130,6 +130,59 @@ tap_rect() {
   adb shell input tap $(((l + r) / 2)) $(((t + b) / 2))
 }
 
+
+# expect_field <field> <awk condition on v> <what>: waits up to 20 s for a
+# numeric header field to satisfy the condition, e.g. expect_field cols 'v < 60' ….
+expect_field() {
+  local i v=""
+  for i in $(seq 1 40); do
+    v="$(header_field "$1")"
+    if [ -n "$v" ] && awk -v v="$v" "BEGIN { exit !($2) }"; then
+      log "ok: $3 ($1=$v)"
+      return 0
+    fi
+    sleep 0.5
+  done
+  dump_screen | head -n1 || true
+  fail "$3: $1=$v does not satisfy '$2'"
+}
+
+# The IME service's own view of whether the soft keyboard is shown.
+ime_shown() { adb shell dumpsys input_method | grep -q 'mInputShown=true'; }
+
+# expect_ime_shown <what>: the keyboard is shown and the grid shrank above it.
+expect_ime_shown() {
+  local i
+  for i in $(seq 1 20); do
+    ime_shown && break
+    sleep 0.5
+  done
+  ime_shown || fail "$1: the soft keyboard is not shown"
+  expect_field rows "v < $ROWS_FULL" "$1"
+}
+
+# full_rows: hides the soft keyboard if it is up (whatever the grid size, e.g.
+# after a zoom), waits for the grid to settle and prints its row count.
+full_rows() {
+  local i rows prev=""
+  if ime_shown; then adb shell input keyevent KEYCODE_BACK; fi
+  for i in $(seq 1 20); do
+    ime_shown || break
+    sleep 0.5
+  done
+  for i in $(seq 1 20); do
+    rows="$(header_field rows)"
+    [ -n "$rows" ] && [ "$rows" = "$prev" ] && break
+    prev="$rows"
+    sleep 0.5
+  done
+  ime_shown && rows=""
+  printf '%s' "$rows"
+}
+
+# zoom <EQUALS|MINUS>: Ctrl+Alt+= / Ctrl+Alt+- from a hardware keyboard.
+zoom() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT "KEYCODE_$1"; }
+
 # --- UI nodes ----------------------------------------------------------------
 
 ui_dump() {
@@ -184,6 +237,17 @@ tap_text() {
   done
   ui_dump_windows > "$OUT/ui-missing.xml"
   fail "no UI node with text '$1' (see ui-missing.xml)"
+}
+
+# swipe_node <fixed-string> <from-x%> <to-x%>: a horizontal swipe across a node's
+# vertical middle, between two fractions of its width.
+swipe_node() {
+  local n b
+  n="$(wait_node "$1")"
+  b="$(printf '%s' "$n" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | grep -oE '[0-9]+' | tr '\n' ' ')"
+  set -- $b "$2" "$3"
+  local y=$(((${2} + ${4}) / 2)) w=$((${3} - ${1}))
+  adb shell input swipe $((${1} + w * ${5} / 100)) "$y" $((${1} + w * ${6} / 100)) "$y" 300
 }
 
 # --- soft keyboard -----------------------------------------------------------
@@ -579,6 +643,100 @@ log "top activity after Open link: $top"
 shot 16-link-open
 adb shell am start -W -n "$ACTIVITY" > /dev/null
 expect_screen '^open https://ferrux.dev/open now$' "back in Ferrux, same session"
+
+log "18: switching apps keeps the session, the view, its zoom and the keyboard"
+hide_ime
+view0="$(header_field view)"
+size0="$(header_field textSizeSp)"
+cols0="$(header_field cols)"
+current0="$(header_field current)"
+[ "${view0:-0}" != 0 ] || fail "no terminal view reported"
+zoom EQUALS
+zoom EQUALS
+expect_field textSizeSp "v > $size0 * 1.15" "Ctrl+Alt+= twice zoomed in"
+expect_field cols "v < $cols0" "zoom resized the grid"
+size1="$(header_field textSizeSp)"
+ROWS_FULL="$(full_rows)" # keyboard hidden, at this zoom
+[ "${ROWS_FULL:-0}" -ge 25 ] || fail "zoomed grid with the keyboard hidden has only '${ROWS_FULL}' rows"
+log "zoomed grid: $ROWS_FULL rows x $(header_field cols) cols"
+tap_node 'content-desc="Terminal"'
+expect_ime_shown "keyboard up before leaving"
+adb shell input keyevent KEYCODE_HOME
+for i in $(seq 1 20); do
+  adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG" || break
+  sleep 0.5
+done
+adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG" && fail "HOME did not leave the app"
+log "ok: app in the background"
+sleep 2
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_screen "^sessions=2 current=$current0 " "same sessions, same current session"
+expect_field view "v == $view0" "same TerminalView instance"
+expect_field textSizeSp "v == $size1" "zoom kept"
+expect_ime_shown "keyboard back after returning"
+sleep 1
+shot 17-resumed
+
+log "19: the zoom is saved across a process restart"
+hide_ime
+sleep 1 # DataStore writes asynchronously; give it a moment before the kill
+adb shell am force-stop "$PKG"
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_screen '^sessions=1 ' "fresh process, one new session"
+expect_screen '^~ \$' "shell prompt visible"
+expect_field view "v != $view0" "a new TerminalView"
+expect_field textSizeSp "v == $size1" "saved zoom applied"
+expect_field rows "v == $ROWS_FULL" "grid sized for the saved zoom"
+shot 18-restarted
+zoom MINUS
+zoom MINUS
+expect_field textSizeSp "v > $size0 - 0.02 && v < $size0 + 0.02" "Ctrl+Alt+- twice zoomed back out"
+expect_field cols "v == $cols0" "grid back to its original width"
+ROWS_FULL="$(full_rows)"
+[ "${ROWS_FULL:-0}" -ge 30 ] || fail "grid with the keyboard hidden has only '${ROWS_FULL}' rows"
+
+log "20: a failed shell stays open with a notice; Enter restarts it in the same directory"
+type_line 'cd%s/system'
+expect_screen '^/system \$' "cd /system"
+type_line 'echo%sBEFORE-EXIT'
+expect_screen '^BEFORE-EXIT$' "marker line"
+failed="$(header_field current)"
+type_line 'exit%s3'
+expect_screen '^\[Process completed \(exit code 3\)' "exit notice in the grid"
+expect_screen "^sessions=1 current=$failed .* exits=3 " "the failed session stays open, marked exited"
+expect_screen '^BEFORE-EXIT$' "its output is still readable"
+hide_ime
+shot 19-exited
+tap_node 'content-desc="Sessions"'
+wait_node 'Exited with code 3' > /dev/null
+log "ok: drawer marks the session as exited"
+shot 20-drawer-exited
+adb shell input keyevent KEYCODE_BACK # close the drawer
+sleep 1
+adb shell input keyevent KEYCODE_ENTER
+expect_field current "v != $failed" "Enter started a new shell"
+expect_screen '^sessions=1 .* exits=- ' "restarted in place, running"
+expect_screen '^/system \$' "restarted in /system"
+dump_screen | grep -q 'Process completed' && fail "the restarted session still shows the notice"
+shot 21-exit-restarted
+
+log "21: a swipe closes an exited session; a clean exit closes by default"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "second session"
+expect_screen '^~ \$' "second session prompt"
+type_line 'exit%s1'
+expect_screen '^\[Process completed \(exit code 1\)' "exit notice"
+hide_ime
+swipe_node 'content-desc="Terminal"' 80 15
+expect_screen '^sessions=1 .* exits=- ' "the swipe closed the exited session"
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+expect_screen '^sessions=2 ' "another session"
+expect_screen '^~ \$' "its prompt"
+type_line 'exit'
+expect_screen '^sessions=1 .* exits=- ' "exit 0 closed the session"
+hide_ime
 
 check_crash
 log "all checks passed"

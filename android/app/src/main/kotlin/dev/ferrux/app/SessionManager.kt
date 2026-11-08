@@ -10,6 +10,8 @@ import android.util.Log
 import dev.ferrux.terminal.TerminalNative
 import dev.ferrux.terminal.SessionEvent
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +27,8 @@ data class SessionInfo(
     val title: String,
     /** Exit status once the process has ended (128 + signal for signals), else null. */
     val exitCode: Int? = null,
+    /** The name given at creation ("Session 2"); a restart goes back to it. */
+    val name: String = title,
 )
 
 /**
@@ -34,6 +38,11 @@ data class SessionInfo(
  * events and notifies output listeners, so views redraw only when something changed.
  */
 class SessionManager(private val context: Context) {
+    private val settings = FerruxSettings.get(context)
+
+    /** Last known working directory of each running session, for restarts. */
+    private val lastCwd = ConcurrentHashMap<Long, String>()
+
     private val _sessions = MutableStateFlow<List<SessionInfo>>(emptyList())
     val sessions: StateFlow<List<SessionInfo>> = _sessions.asStateFlow()
 
@@ -77,14 +86,7 @@ class SessionManager(private val context: Context) {
      * @throws java.io.IOException if spawning fails
      */
     fun create(rows: Int = 24, cols: Int = 80): Long {
-        val env = FerruxAppNative.defaultEnv()
-        val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
-            ?.let { File(it) } ?: File(context.filesDir, "home")
-        home.mkdirs()
-        // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
-        val id = FerruxAppNative.createSession(
-            FerruxAppNative.defaultShell(), emptyArray(), env, home.absolutePath, rows, cols,
-        )
+        val id = spawnShell(cwd = null, rows, cols)
         _sessions.update { it + SessionInfo(id, title = "Session ${it.size + 1}") }
         _current.value = id
         // The event thread only drains sessions it knows about; catch anything
@@ -93,12 +95,48 @@ class SessionManager(private val context: Context) {
         return id
     }
 
+    /**
+     * Replaces an exited session with a new shell in the directory the old one was
+     * last in, at the same place in the list. Returns the new id, or null (with a
+     * notice on the old session's screen) if the shell could not be started.
+     */
+    fun restart(id: Long): Long? {
+        val old = _sessions.value.firstOrNull { it.id == id } ?: return null
+        val cwd = lastCwd[id]?.takeIf { File(it).isDirectory }
+        val newId = try {
+            spawnShell(cwd, rows = 24, cols = 80)
+        } catch (e: IOException) {
+            Log.e(FerruxApplication.TAG, "restart of session $id failed", e)
+            TerminalNative.feedLocal(id, "\r\n" + context.getString(R.string.restart_failed, e.message.orEmpty()))
+            return null
+        }
+        _sessions.update { list -> list.map { if (it.id == id) SessionInfo(newId, title = old.name) else it } }
+        if (_current.value == id) _current.value = newId
+        TerminalNative.destroySession(id)
+        lastCwd.remove(id)
+        drainEvents(newId)
+        return newId
+    }
+
+    /** Starts the default shell in [cwd] (home if null). */
+    private fun spawnShell(cwd: String?, rows: Int, cols: Int): Long {
+        val env = FerruxAppNative.defaultEnv()
+        val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
+            ?.let { File(it) } ?: File(context.filesDir, "home")
+        home.mkdirs()
+        // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
+        return FerruxAppNative.createSession(
+            FerruxAppNative.defaultShell(), emptyArray(), env, cwd ?: home.absolutePath, rows, cols,
+        )
+    }
+
     fun select(id: Long) {
         if (_sessions.value.any { it.id == id }) _current.value = id
     }
 
     fun kill(id: Long) {
         TerminalNative.destroySession(id)
+        lastCwd.remove(id)
         _sessions.update { list -> list.filterNot { it.id == id } }
         if (_current.value == id) _current.value = _sessions.value.lastOrNull()?.id ?: 0L
     }
@@ -126,7 +164,11 @@ class SessionManager(private val context: Context) {
             }
             if (next == seq) continue
             seq = next
-            for (session in _sessions.value) drainEvents(session.id)
+            for (session in _sessions.value) {
+                drainEvents(session.id)
+                // A `cd` shows up as output (the next prompt), so this keeps up with it.
+                if (session.exitCode == null) TerminalNative.cwd(session.id)?.let { lastCwd[session.id] = it }
+            }
             outputListeners.forEach(Runnable::run)
         }
     }
@@ -137,11 +179,11 @@ class SessionManager(private val context: Context) {
             when (val event = SessionEvent.parse(encoded)) {
                 is SessionEvent.Title -> updateSession(id) { it.copy(title = event.title) }
                 is SessionEvent.Exited -> {
-                    // Like closing a terminal window on `exit`: the session goes away.
-                    // TODO(M4): optionally keep failed sessions open to show their output.
                     Log.i(FerruxApplication.TAG, "session $id exited with ${event.code}")
                     updateSession(id) { it.copy(exitCode = event.code) }
-                    mainHandler.post { kill(id) }
+                    // Give the I/O thread a moment to drain the last output, so the
+                    // notice ends up below it.
+                    mainHandler.postDelayed({ onExited(id, event.code) }, EXIT_NOTICE_DELAY_MS)
                 }
                 is SessionEvent.Bell -> _bells.tryEmit(id)
                 is SessionEvent.Clipboard -> mainHandler.post { onClipboardWrite(id, event.text) }
@@ -152,6 +194,21 @@ class SessionManager(private val context: Context) {
                 null -> Unit
             }
         }
+    }
+
+    /**
+     * Like Termux: a session whose shell exited stays open with its output and a
+     * notice (Enter restarts it, a swipe or Esc closes it; see [ExitedSessionBackend]).
+     * A clean exit closes the session at once, unless the user turned
+     * [FerruxSettings.closeOnCleanExit] off.
+     */
+    private fun onExited(id: Long, code: Int) {
+        if (_sessions.value.none { it.id == id }) return
+        if (code == 0 && settings.closeOnCleanExit.value) {
+            kill(id)
+            return
+        }
+        TerminalNative.feedLocal(id, ExitNotice.text(code))
     }
 
     private inline fun updateSession(id: Long, crossinline change: (SessionInfo) -> SessionInfo) {
@@ -184,6 +241,7 @@ class SessionManager(private val context: Context) {
 
     companion object {
         private const val AWAIT_TIMEOUT_MS = 500
+        private const val EXIT_NOTICE_DELAY_MS = 150L
 
         /** The live manager (owned by [FerruxService]); used by debug tooling. */
         @Volatile

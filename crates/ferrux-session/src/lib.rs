@@ -244,6 +244,35 @@ impl Session {
         self.lock().exit
     }
 
+    /// Shows `bytes` as if the program had written them, without sending
+    /// anything to the program: e.g. a "process completed" notice.
+    pub fn feed_local(&self, bytes: &[u8]) {
+        let mut st = self.lock();
+        if catch_unwind(AssertUnwindSafe(|| st.terminal.feed(bytes))).is_err() {
+            log::error!(
+                "session {}: terminal engine panicked on local text",
+                self.id
+            );
+        }
+        st.terminal.scroll_to_bottom();
+        drop(st);
+        self.shared.changed();
+    }
+
+    /// The working directory of the session's process while it runs, read
+    /// from `/proc` (Linux and Android); `None` once it has been reaped, for
+    /// an attached session, or where `/proc` is unavailable.
+    pub fn cwd(&self) -> Option<std::path::PathBuf> {
+        let child = self.child.as_ref()?;
+        // Holding the lock keeps the waiter from reaping, so the pid cannot
+        // have been recycled by another process.
+        let reaped = child.reaped.lock().unwrap_or_else(|e| e.into_inner());
+        if *reaped {
+            return None;
+        }
+        std::fs::read_link(format!("/proc/{}/cwd", child.pid)).ok()
+    }
+
     /// Hangs up the session like closing a terminal window: `SIGHUP` to the
     /// shell's group and the terminal's foreground job (e.g. vim in its own
     /// group), then `SIGKILL` to both if they are still around after

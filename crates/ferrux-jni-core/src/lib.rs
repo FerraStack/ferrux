@@ -96,6 +96,8 @@ pub const TERMINAL_NATIVES: &[NativeMethod<'static>] = &[
         fn = natives::selection_text,
     },
     native_method! { static fn screen_text(id: jlong) -> JString, fn = natives::screen_text },
+    native_method! { static fn feed_local(id: jlong, text: JString), fn = natives::feed_local },
+    native_method! { static fn cwd(id: jlong) -> JString, fn = natives::cwd },
     native_method! {
         static fn await_change(last_seq: jlong, timeout_ms: jint) -> jlong,
         fn = natives::await_change,
@@ -363,6 +365,28 @@ mod natives {
         match core::selection_text(id) {
             Some(text) => JString::from_str(env, text),
             // null: nothing selected or no such session.
+            None => Ok(JString::default()),
+        }
+    }
+
+    pub fn feed_local(
+        env: &mut Env<'_>,
+        _: JClass<'_>,
+        id: jlong,
+        text: JString<'_>,
+    ) -> JResult<()> {
+        core::feed_local(id, &text.try_to_string(env)?);
+        Ok(())
+    }
+
+    pub fn cwd<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+        id: jlong,
+    ) -> JResult<JString<'local>> {
+        match core::cwd(id) {
+            Some(cwd) => JString::from_str(env, cwd),
+            // null: exited, attached, or no such session.
             None => Ok(JString::default()),
         }
     }

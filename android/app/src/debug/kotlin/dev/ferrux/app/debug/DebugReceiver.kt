@@ -12,6 +12,7 @@ import dev.ferrux.app.FerruxAppNative
 import dev.ferrux.terminal.TerminalNative
 import dev.ferrux.terminal.SnapshotLayout
 import java.io.File
+import java.util.Locale
 
 /**
  * Debug-build test hook: dumps the session state and the visible terminal
@@ -27,6 +28,9 @@ import java.io.File
  * It also writes `files/debug-ui.txt`, one `key=value` per line: the terminal
  * view's geometry and selection state ([dev.ferrux.terminal.TerminalView.debugState])
  * and the clipboard text. Newlines in values are written as `\n`.
+ *
+ * In the header, `view` is the identity of the on-screen TerminalView (0 if none)
+ * and `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
  */
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -60,6 +64,12 @@ class DebugReceiver : BroadcastReceiver() {
         }
         val dump = buildString {
             append("sessions=${sessions.size} current=$current rows=$rows cols=$cols offset=$offset")
+            // Runs on the main thread, so the view can be read directly.
+            val view = ActiveTerminal.view?.get()
+            append(" view=").append(view?.let { System.identityHashCode(it) } ?: 0)
+            append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
+            // Exit code per session, "-" while running.
+            append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
             append(" titles=").append(sessions.joinToString("|") { it.title })
             append("\n---\n")
             append(text)
