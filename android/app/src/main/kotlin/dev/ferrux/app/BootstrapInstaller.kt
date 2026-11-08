@@ -87,7 +87,31 @@ class BootstrapInstaller(private val context: Context) {
         }
     }
 
+    /**
+     * Downloads [url] to [dest], retrying transient failures: GitHub's release
+     * downloads occasionally answer 5xx (seen: 504) or drop the connection.
+     */
     private fun download(url: String, dest: File) {
+        var attempt = 1
+        while (true) {
+            try {
+                downloadOnce(url, dest)
+                return
+            } catch (e: IOException) {
+                // Server errors, timeouts and dropped connections are retried;
+                // a 4xx (e.g. a missing release) is not.
+                if (e is PermanentDownloadError || attempt >= DOWNLOAD_ATTEMPTS) throw e
+                Log.w(FerruxApplication.TAG, "bootstrap download attempt $attempt failed: ${e.message}")
+                _state.value = BootstrapState.Downloading(0, -1)
+                Thread.sleep(RETRY_DELAY_MS * attempt)
+                attempt++
+            }
+        }
+    }
+
+    private class PermanentDownloadError(message: String) : IOException(message)
+
+    private fun downloadOnce(url: String, dest: File) {
         val part = File(dest.path + ".part")
         val connection = URL(url).openConnection() as HttpURLConnection
         // GitHub redirects release assets to its CDN (HTTPS → HTTPS, followed
@@ -97,6 +121,9 @@ class BootstrapInstaller(private val context: Context) {
         connection.setRequestProperty("User-Agent", "Ferrux")
         try {
             val code = connection.responseCode
+            if (code in 400..499 && code != 408 && code != 429) {
+                throw PermanentDownloadError("Download failed: HTTP $code from ${connection.url.host}")
+            }
             if (code != HttpURLConnection.HTTP_OK) {
                 throw IOException("Download failed: HTTP $code from ${connection.url.host}")
             }
@@ -153,5 +180,10 @@ class BootstrapInstaller(private val context: Context) {
             interrupt()
             join()
         }
+    }
+
+    private companion object {
+        const val DOWNLOAD_ATTEMPTS = 4
+        const val RETRY_DELAY_MS = 3_000L
     }
 }

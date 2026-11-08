@@ -578,7 +578,16 @@ for i in $(seq 1 600); do
   after="$(setup_of "$(sed -n 2p <<< "$out")")"
   [ "$before" = "${seen##* }" ] || seen="$seen $before"
   case "$after" in
-    failed) dump_screen; fail "bootstrap installation failed" ;;
+    failed)
+      dump_screen
+      # The app already retries server errors; if GitHub is still failing,
+      # do what a user would: tap Try again (twice at most).
+      retries=$((${retries:-0} + 1))
+      [ "$retries" -le 2 ] || fail "bootstrap installation failed"
+      echo "::warning::bootstrap setup failed; tapping Try again ($retries/2)"
+      tap_node 'text="Try again"'
+      continue
+      ;;
   esac
   if [ -z "$captured" ] && grep -E "$progress_re" <<< "$before" > /dev/null && grep -E "$progress_re" <<< "$after" > /dev/null; then
     adb exec-out cat /data/local/tmp/progress.png > "$OUT/00b-bootstrap-progress.png"
