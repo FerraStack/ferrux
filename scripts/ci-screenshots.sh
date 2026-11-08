@@ -588,7 +588,14 @@ adb shell "run-as $PKG sh -c 'cat > files/home/osc52.sh'" < "$HERE/ci-osc52.sh"
 clip_before="$(ui_field clipboard)"
 type_line 'sh%sosc52.sh'
 expect_screen '^osc52 sent$' "the program sent OSC 52"
-hide_ime
+# hide_ime can't be used here: it waits for the full row count, which the snackbar
+# now (rightly) takes away until it times out. Ask the IME service instead.
+if ime_shown; then adb shell input keyevent KEYCODE_BACK; fi
+for i in $(seq 1 20); do
+  ime_shown || break
+  sleep 0.5
+done
+ime_shown && fail "could not hide the soft keyboard"
 rows_before_ask="$ROWS_FULL"
 snack="$(wait_node 'wants to copy 8 characters to the clipboard')"
 log "ok: permission snackbar shown"
