@@ -101,6 +101,10 @@ Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font
 is saved. Switching to another app and back keeps the terminal as it was, including the
 soft keyboard.
 
+With TalkBack, the terminal reads like a page of text: explore by touch or swipe to hear
+it line by line, and read a line by character or word. New output is announced
+politely once the screen is quiet (the latest lines, not what you typed).
+
 When a shell exits with an error, its session stays open with its last output and a
 notice: press Enter to start a new shell in the same directory, or swipe across the
 terminal (or press Esc) to close it. The drawer marks such sessions with their exit
@@ -204,7 +208,7 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     a process restart (saved zoom); exited sessions (notice, drawer badge,
     restart in the same directory, swipe to close, clean exit closes); the
     notification (session count, tap to open, Exit closes everything, wake lock);
-    and keep screen on.
+    keep screen on; and the screen reader (rows as text nodes, announced output).
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only
