@@ -148,7 +148,7 @@ expect_field() {
 }
 
 # The IME service's own view of whether the soft keyboard is shown.
-ime_shown() { adb shell dumpsys input_method | grep -q 'mInputShown=true'; }
+ime_shown() { adb shell dumpsys input_method | grep 'mInputShown=true' > /dev/null; }
 
 # expect_ime_shown <what>: the keyboard is shown and the grid shrank above it.
 expect_ime_shown() {
@@ -272,7 +272,7 @@ swipe_node() {
 
 # --- system UI -----------------------------------------------------------------
 
-app_focused() { adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG"; }
+app_focused() { adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep "$PKG" > /dev/null; }
 
 # expect_focus <yes|no> <what>: waits up to 10 s for the app window to (not) have focus.
 expect_focus() {
@@ -285,7 +285,7 @@ expect_focus() {
   log "ok: $2"
 }
 
-wake_lock_held() { adb shell dumpsys power | grep -qE "PARTIAL_WAKE_LOCK +'ferrux:sessions'"; }
+wake_lock_held() { adb shell dumpsys power | grep -E "PARTIAL_WAKE_LOCK +'ferrux:sessions'" > /dev/null; }
 
 # The window flags (fl=…) of the terminal Activity's window.
 window_flags() {
@@ -293,7 +293,7 @@ window_flags() {
     awk '/Window #/ { w = $0 } /fl=/ && w ~ /dev.ferrux.app.MainActivity/ { print }'
 }
 
-screen_kept_on() { window_flags | grep -q KEEP_SCREEN_ON; }
+screen_kept_on() { window_flags | grep KEEP_SCREEN_ON > /dev/null; }
 
 # wait_for <what> <command…>: waits up to 10 s for a command to succeed.
 wait_for() {
@@ -312,7 +312,7 @@ wait_for() {
 not() { ! "$@"; }
 
 service_running() {
-  adb shell dumpsys activity services "$PKG" | grep -q "ServiceRecord.*FerruxService"
+  adb shell dumpsys activity services "$PKG" | grep "ServiceRecord.*FerruxService" > /dev/null
 }
 
 # shade_node <fixed-string>: opens the notification shade and waits for a node,
@@ -382,13 +382,16 @@ show_ime() {
 # ime_ready: the IME service reports the soft keyboard shown and our terminal as
 # the view it serves, so injected keys reach a live input connection. (Keys
 # injected while Gboard is still binding get dropped or reordered: "llo ferrux".)
+# (Here and above: `cmd | grep PATTERN > /dev/null`, not `grep -q`. Under
+# pipefail, grep -q exiting at the first match kills `cmd` with SIGPIPE, and the
+# pipeline then reports "no match".)
 ime_ready() {
   local d
   d="$(adb shell dumpsys input_method 2> /dev/null)"
-  printf '%s\n' "$d" | grep -q 'mInputShown=true' || return 1
+  grep 'mInputShown=true' <<< "$d" > /dev/null || return 1
   # The dump lists every client connection; ours must be among the served ones
   # (others, such as fallback connections, show mServedView=null).
-  printf '%s\n' "$d" | grep -q 'mServedView=[^ ]*TerminalView'
+  grep 'mServedView=[^ ]*TerminalView' <<< "$d" > /dev/null
 }
 
 # wait_ime_ready: brings the keyboard up and waits (up to 10 s) until ime_ready
@@ -489,7 +492,7 @@ run_line() {
 check_crash() {
   adb logcat -d -v threadtime > "$OUT/logcat-full.txt" || true
   grep -E "$PKG|AndroidRuntime|DEBUG|crash_dump|libc|ferrux|FerruxDump" "$OUT/logcat-full.txt" > "$OUT/logcat-app.txt" || true
-  if grep -A2 'FATAL EXCEPTION' "$OUT/logcat-full.txt" | grep -q "Process: $PKG"; then
+  if grep -A2 'FATAL EXCEPTION' "$OUT/logcat-full.txt" | grep "Process: $PKG" > /dev/null; then
     grep -A30 'FATAL EXCEPTION' "$OUT/logcat-full.txt" | head -60
     fail "Java crash in $PKG"
   fi
@@ -853,10 +856,10 @@ tap_node 'content-desc="Terminal"'
 expect_ime_shown "keyboard up before leaving"
 adb shell input keyevent KEYCODE_HOME
 for i in $(seq 1 20); do
-  adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG" || break
+  adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep "$PKG" > /dev/null || break
   sleep 0.5
 done
-adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep -q "$PKG" && fail "HOME did not leave the app"
+adb shell dumpsys window | grep -E 'mCurrentFocus=' | grep "$PKG" > /dev/null && fail "HOME did not leave the app"
 log "ok: app in the background"
 sleep 2
 adb shell am start -W -n "$ACTIVITY" > /dev/null
@@ -907,7 +910,7 @@ adb shell input keyevent KEYCODE_ENTER
 expect_field current "v != $failed" "Enter started a new shell"
 expect_screen '^sessions=1 .* exits=- ' "restarted in place, running"
 expect_screen '^/system \$' "restarted in /system"
-dump_screen | grep -q 'Process completed' && fail "the restarted session still shows the notice"
+dump_screen | grep 'Process completed' > /dev/null && fail "the restarted session still shows the notice"
 shot 21-exit-restarted
 
 log "21: a swipe closes an exited session; a clean exit closes by default"
@@ -955,9 +958,9 @@ service_running && fail "the service still runs after Exit"
 log "ok: Exit stopped the service"
 adb shell cmd statusbar collapse
 expect_focus no "Exit closed the app"
-adb shell dumpsys activity activities | grep -q "ActivityRecord.*$PKG/" && fail "an Activity is still around after Exit"
+adb shell dumpsys activity activities | grep "ActivityRecord.*$PKG/" > /dev/null && fail "an Activity is still around after Exit"
 log "ok: no Activity left"
-adb shell dumpsys notification --noredact | grep -qE "NotificationRecord.*pkg=$PKG" && fail "the notification is still posted after Exit"
+adb shell dumpsys notification --noredact | grep -E "NotificationRecord.*pkg=$PKG" > /dev/null && fail "the notification is still posted after Exit"
 log "ok: notification removed"
 adb shell am start -W -n "$ACTIVITY" > /dev/null
 expect_screen '^sessions=1 ' "a fresh start after Exit"
