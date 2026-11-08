@@ -665,29 +665,52 @@ class FerruxProcess : Closeable {                  // close() = IFerruxApi.close
 }
 ```
 
-**Distribution: JitPack.** Coordinates:
+**Distribution: GitHub Packages (Maven).** `ferrux-client` is published next
+to `terminal-view`, group `dev.ferrux`, by `.github/workflows/publish.yml`:
+
+- **Build:** the workflow builds the native libraries with cargo-ndk and runs
+  `:terminal-view:publish :api:publish`.
+- **Version:** one Gradle property, `ferrux.publishVersion` in
+  `android/gradle.properties`.
+  - Every push to `main` publishes it as a `-SNAPSHOT`.
+  - A tag `v<version>` publishes `<version>`.
+- **Consumers** add the repository and the coordinates:
 
 ```kotlin
 // settings.gradle.kts
-repositories { maven("https://jitpack.io") }
+maven {
+    url = uri("https://maven.pkg.github.com/FerraStack/ferrux")
+    credentials {
+        username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+        password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+    }
+}
 // build.gradle.kts
-implementation("com.github.FerraStack.ferrux:ferrux-client:<tag or commit>")
+implementation("dev.ferrux:ferrux-client:0.1.0-SNAPSHOT")
 ```
 
-Why JitPack rather than GitHub Packages: GitHub Packages' Maven registry needs
-an authenticated token even for public packages, so every consumer (Ferride's
-CI, contributors, third parties) would need a PAT or per-package Actions
-access. JitPack is anonymous and builds straight from a tag or commit. A
-`jitpack.yml` at the repository root runs
-`./gradlew -p android :api:publishToMavenLocal`; CI runs the same task on
-every PR so JitPack builds don't break unnoticed. The local Maven coordinates
-are `dev.ferrux:ferrux-client:<version>`, which is also what a Gradle
-composite build (`includeBuild`) of a Ferrux checkout substitutes.
+GitHub Packages requires authentication even for public packages:
+
+- **Ferride's CI:** uses its `GITHUB_TOKEN` with `permissions: packages: read`.
+  Each package must also grant the ferride repository read access (Package
+  settings → *Manage Actions access*, an org-admin setting; see §12).
+- **Local developers:** use a personal access token (classic) with
+  `read:packages`, as `gpr.user`/`gpr.key` in `~/.gradle/gradle.properties`.
+- **Without a token:** `./gradlew :api:publishToMavenLocal` from a Ferrux
+  checkout plus `mavenLocal()`, or an `includeBuild`, gives the same
+  coordinates.
+
+CI runs `publishToMavenLocal` on every PR and checks the AAR. Maven Central can
+come later; it needs a founder-owned Sonatype account and a signing key.
+[REUSE.md](REUSE.md#publishing) covers both artifacts.
 
 The library has no native code and no dependency on `terminal-view`; it pulls
 in only `kotlinx-coroutines-android`. Rendering a terminal from the PTY fd is
-the client's job: Ferride uses `ferrux-term` from Rust; Kotlin clients can
-embed `terminal-view` once its JNI is split from the Ferrux app (issue #6).
+the client's job:
+
+- **Ferride:** runs `ferrux-term` from Rust.
+- **Kotlin clients:** can embed `dev.ferrux:terminal-view` and hand the fd to
+  `TerminalNative.attachPty` (docs/REUSE.md).
 
 ## 10. Testing
 
@@ -750,6 +773,12 @@ with these deliberate differences:
    needed for Ferrux's own CI (§3.3).
 3. **Third-party access** (opt-in dangerous permission with an approval UI):
    whether and when.
+4. **Package access for Ferride's CI:** on GitHub, grant the `ferride`
+   repository read access to the `dev.ferrux.ferrux-client` and
+   `dev.ferrux.terminal-view` packages (*Manage Actions access*). This can only
+   be done once the packages exist, i.e. after the first publish from `main`.
+5. **Maven Central** (optional, later): a Sonatype account and a signing key
+   owned by the founder.
 
 ## 13. Implementation plan
 
@@ -757,7 +786,7 @@ with these deliberate differences:
 2. `crates/ferrux-host` (platform-neutral: pipes spawn in `ferrux-pty`,
    process registry with owners and cleanup, path confinement), JNI in
    `ferrux-android`, `FerruxApiService` in the app, module `android/api` with
-   AIDL + `ferrux-client`, `jitpack.yml`. Shared sessions and
+   AIDL + `ferrux-client`, published to GitHub Packages. Shared sessions and
    `listSessions`/`attachSession` answer `ERR_UNSUPPORTED` (and `getInfo`
    doesn't list `attach`) until step 3b.
 3. `:apiclient-sample` and the emulator test of §10, with screenshots.
