@@ -1149,8 +1149,8 @@ open_settings
 settings_tap 'text="One row"'
 expect_ui settings ',extraKeys:ONE_ROW,' "One row saved"
 close_settings
-wait_node 'content-desc="ESC"' > /dev/null
-[ -z "$(node 'content-desc="PGUP"')" ] || fail "PGUP is still shown with one row"
+wait_node 'resource-id="key-ESC"' > /dev/null
+[ -z "$(node 'resource-id="key-PGUP"')" ] || fail "PGUP is still shown with one row"
 log "ok: one row of extra keys"
 shot 32-extra-keys-one-row
 open_settings
@@ -1158,13 +1158,13 @@ settings_tap 'text="Hidden"'
 expect_ui settings ',extraKeys:HIDDEN,' "Hidden saved"
 close_settings
 sleep 1
-[ -z "$(node 'content-desc="ESC"')" ] || fail "extra keys still shown"
+[ -z "$(node 'resource-id="key-ESC"')" ] || fail "extra keys still shown"
 log "ok: no extra keys"
 open_settings # by edge swipe
 settings_tap 'text="Two rows"'
 expect_ui settings ',extraKeys:TWO_ROWS,' "Two rows saved"
 close_settings
-wait_node 'content-desc="PGUP"' > /dev/null
+wait_node 'resource-id="key-PGUP"' > /dev/null
 expect_screen "rows=$ROWS_FULL " "full grid again"
 
 log "31: keep screen on"
