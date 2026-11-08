@@ -31,7 +31,8 @@ class OwnershipTest {
         val started = CountDownLatch(1)
         val finish = CountDownLatch(1)
         val released = AtomicInteger()
-        val job = async {
+        // On its own thread: runBlocking's thread blocks on the latch below.
+        val job = async(io) {
             completeOrRelease(io, {
                 started.countDown()
                 finish.await(5, TimeUnit.SECONDS) // the "Binder call" in flight
