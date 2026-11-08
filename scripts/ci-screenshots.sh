@@ -6,7 +6,10 @@
 #
 #   ci-screenshots.sh <app-debug.apk> [full|smoke]
 #
-# smoke: launch + echo only (used for the API 30 job).
+# Both modes start from a fresh install: the first-run setup downloads and
+# installs the bootstrap, and the session must be $PREFIX/bin/bash.
+# full:  + pkg install python git, then the UI checks (API 35, screenshots posted).
+# smoke: bootstrap + bash + echo only (used for the API 30 job).
 set -euo pipefail
 
 APK="${1:?usage: ci-screenshots.sh <app-debug.apk> [full|smoke]}"
@@ -36,10 +39,11 @@ dump_screen() {
   adb exec-out run-as "$PKG" cat files/debug-screen.txt
 }
 
-# expect_screen <ERE> <what>: waits up to 30 s for the grid/header to match.
+# expect_screen <ERE> <what> [seconds]: waits (default 30 s) for the
+# grid/header to match.
 expect_screen() {
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "${3:-30}"); do
     if dump_screen > "$OUT/screen.txt" 2> /dev/null && grep -Eq -- "$1" "$OUT/screen.txt"; then
       log "ok: $2"
       return 0
@@ -194,12 +198,20 @@ ui_dump() {
 node() { ui_dump | tr '<' '\n' | grep -F -- "$1" | head -n1 || true; }
 
 wait_node() {
-  local i n
+  local i n ui
   for i in $(seq 1 20); do
-    n="$(node "$1")"
+    ui="$(ui_dump | tr '<' '\n')"
+    n="$(printf '%s' "$ui" | grep -F -- "$1" | head -n1 || true)"
     if [ -n "$n" ]; then
       printf '%s' "$n"
       return 0
+    fi
+    # Emulator flake: an ANR dialog of another app (e.g. "Pixel Launcher
+    # isn't responding") covers the screen. Choose Wait and look again.
+    if grep "isn't responding" <<< "$ui" > /dev/null; then
+      echo "== dismissing ANR dialog: $(grep -o "text=\"[^\"]*isn't responding\"" <<< "$ui" | head -n1)" >&2
+      n="$(grep -F 'text="Wait"' <<< "$ui" | head -n1 || true)"
+      if [ -n "$n" ]; then tap_bounds "$n"; fi
     fi
     sleep 1
   done
@@ -543,13 +555,60 @@ adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS 2> /dev/null || 
 adb logcat -c
 adb shell am start -W -n "$ACTIVITY"
 
-log "01: fresh launch lands in a shell"
-expect_screen '^sessions=1 ' "one session auto-created"
-expect_screen '^~ \$' "shell prompt visible"
+log "00a: a fresh install opens the first-run setup"
+expect_screen '^sessions=0 .*setup=idle' "setup screen waiting for the user, no session yet"
+wait_node 'text="Download and install"' > /dev/null
+shot 00a-setup
+
+log "00b: bootstrap download + install"
+tap_node 'text="Download and install"'
+# The progress UI animates, so uiautomator cannot dump it; the app's own
+# state (DebugReceiver header) tells when a screenshot shows progress. One
+# device-side command reads the state, takes the screenshot and reads the
+# state again (setup takes only seconds): both in progress means the
+# screenshot shows the progress screen.
+dump_cmd="am broadcast -n $RECEIVER -a dev.ferrux.debug.DUMP_SCREEN > /dev/null; run-as $PKG head -n1 files/debug-screen.txt"
+setup_of() { tr ' ' '\n' <<< "$1" | sed -n 's/^setup=//p'; }
+progress_re='^(downloading|verifying|extracting|finishing)$'
+captured=
+seen=
+for i in $(seq 1 600); do
+  out="$(adb shell "$dump_cmd; screencap -p /data/local/tmp/progress.png; $dump_cmd" | tr -d '\r')"
+  before="$(setup_of "$(sed -n 1p <<< "$out")")"
+  after="$(setup_of "$(sed -n 2p <<< "$out")")"
+  [ "$before" = "${seen##* }" ] || seen="$seen $before"
+  case "$after" in
+    failed) dump_screen; fail "bootstrap installation failed" ;;
+  esac
+  if [ -z "$captured" ] && grep -E "$progress_re" <<< "$before" > /dev/null && grep -E "$progress_re" <<< "$after" > /dev/null; then
+    adb exec-out cat /data/local/tmp/progress.png > "$OUT/00b-bootstrap-progress.png"
+    captured=1
+    log "screenshot 00b-bootstrap-progress (setup=$before -> $after)"
+  fi
+  [ "$after" = installed ] && break
+done
+log "setup states seen:$seen"
+if [ -z "$captured" ]; then
+  # The smoke job publishes no screenshots; only the full job must show it.
+  [ "$MODE" = smoke ] || fail "never caught the setup progress screen (states seen:$seen)"
+  log "setup finished before a progress screenshot could be taken"
+fi
+expect_screen '^sessions=1 .*bootstrap=installed setup=installed' "bootstrap installed, session started" 180
+
+log "01: the session is a login bash from \$PREFIX"
+expect_screen '^~ \$' "bash prompt visible"
 ROWS_FULL="$(stable_rows)" # right after launch the insets may still be settling
 log "grid at launch: ${ROWS_FULL} rows x $(header_field cols) cols"
 [ "$ROWS_FULL" -ge 30 ] || fail "terminal only has $ROWS_FULL rows on a full screen"
-shot 01-launch
+type_line 'echo%s$PREFIX'
+expect_screen '^/data/data/dev\.ferrux/files/usr$' "echo \$PREFIX"
+# $0 of the session shell with the prefix stripped: it is $PREFIX/bin/bash.
+type_line 'echo%sshell=${0#$PREFIX}'
+expect_screen '^shell=/bin/bash$' "session shell is \$PREFIX/bin/bash"
+type_line 'bash%s--version'
+expect_screen '^GNU bash, version [0-9]' "bash --version"
+hide_ime
+shot 01-bash
 
 log "02: echo"
 # Real soft-keyboard typing (most other steps type through the debug hook).
@@ -563,6 +622,36 @@ if [ "$MODE" = smoke ]; then
   log "smoke test passed"
   exit 0
 fi
+
+log "02a: pkg install from the Ferrux repository"
+# CI only: GitHub's release downloads occasionally answer 504. Retry harder,
+# and make `apt update` fail on a failed fetch so the marker below is honest.
+printf 'Acquire::Retries "8";\nAPT::Update::Error-Mode "any";\n' |
+  adb shell "run-as $PKG sh -c 'cat > files/usr/etc/apt/apt.conf.d/99-ci'"
+# Markers are computed by the shell, so they cannot match the typed command
+# line, and they only print if the command succeeded.
+type_line 'pkg%supdate%s&&%secho%sUPDATED-$((1+1))'
+expect_screen '^UPDATED-2$' "pkg update" 300
+type_line 'pkg%sinstall%s-y%spython%sgit%s&&%secho%sPKG-$((40+2))'
+if ! (expect_screen '^PKG-42$' "pkg install -y python git" 900); then
+  shot 02a-pkg-install-failed
+  # The grid only holds the tail; apt keeps the whole dpkg transcript.
+  echo "--- \$PREFIX/var/log/apt/term.log (tail) ---"
+  adb exec-out run-as "$PKG" tail -n 120 files/usr/var/log/apt/term.log || true
+  fail "pkg install -y python git failed"
+fi
+hide_ime
+shot 02a-pkg-install
+check_crash
+
+log "02a: python and git run"
+type_line "python%s-c%s'print(6*7)'"
+expect_screen '^42$' "python -c 'print(6*7)' printed 42"
+type_line 'git%s--version'
+expect_screen '^git version [0-9]' "git --version"
+hide_ime
+shot 02a-python
+check_crash
 
 log "02b: clear empties the screen, also after the keyboard closes (#30)"
 # `clear` (toybox) writes ESC[2J ESC[H. With the keyboard up the grid is short;

@@ -33,4 +33,16 @@
     <string name="notification_text_api">%1$s · %2$d process(es) for other apps</string>
     <string name="api_permission_label">run programs in Ferrux</string>
     <string name="api_permission_description">Lets the app run programs and read or change files in Ferrux, with the same access as Ferrux itself. Only apps from the Ferrux developers can get this permission.</string>
+    <string name="bootstrap_title">Set up Ferrux</string>
+    <string name="bootstrap_intro">Ferrux installs a small Linux system into its private storage: bash, apt and the core utilities. After that, add software with pkg install.</string>
+    <string name="bootstrap_source">The packages are downloaded from github.com/FerraStack/ferrux-packages and checked against a fingerprint built into this app.</string>
+    <string name="bootstrap_install">Download and install</string>
+    <string name="bootstrap_use_system_shell">Use Android\'s shell for now</string>
+    <string name="bootstrap_downloading">Downloading packages…</string>
+    <string name="bootstrap_verifying">Checking the download…</string>
+    <string name="bootstrap_extracting">Installing…</string>
+    <string name="bootstrap_finishing">Finishing…</string>
+    <string name="bootstrap_files">%1$d of %2$d files</string>
+    <string name="bootstrap_failed">Setup didn\'t finish. Check your connection and try again.</string>
+    <string name="bootstrap_retry">Try again</string>
 </resources>

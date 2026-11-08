@@ -127,6 +127,13 @@ impl Layout {
         self.bin().join("sh").exists()
     }
 
+    /// Whether `program` is in the app's data directory, where `execve()` is
+    /// denied at targetSdk ≥ 29 (RESEARCH.md §2.1), so it must be started as
+    /// `/system/bin/linker64 <program>`.
+    pub fn needs_linker(&self, program: &Path) -> bool {
+        program.starts_with(&self.files_dir)
+    }
+
     /// The termux-exec `LD_PRELOAD` library, if installed.
     pub fn exec_preload_lib(&self) -> Option<PathBuf> {
         ["libtermux-exec-ld-preload.so", "libtermux-exec.so"]
@@ -140,32 +147,36 @@ impl Layout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shell {
     pub program: PathBuf,
-    /// `argv[0]`, e.g. `-sh` to request a login shell.
+    /// Arguments after `argv[0]`, e.g. `-l` for a login shell.
+    pub args: Vec<String>,
+    /// `argv[0]`, e.g. `-sh` to request a login shell. Lost when the program
+    /// runs through the linker, hence [`Shell::args`].
     pub arg0: Option<String>,
     /// The program lives in the app data dir and must be run through the
     /// system linker on targetSdk ≥ 29.
     pub needs_linker: bool,
 }
 
-/// Picks the session shell: the prefix's `login`/`bash`/`sh` once
-/// bootstrapped, otherwise Android's `/system/bin/sh`.
+/// Picks the session shell: `$PREFIX/bin/bash -l` (or `sh -l`) once
+/// bootstrapped, otherwise Android's `/system/bin/sh` as a login shell.
 pub fn default_shell(layout: &Layout) -> Shell {
-    // TODO(M3): honour ~/.ferrux/shell and $PREFIX/bin/login once the
-    // bootstrap exists and linker exec is verified on devices.
+    // TODO(M4): honour a user-chosen shell (~/.ferrux/shell, chsh).
     if layout.is_bootstrapped() {
-        for name in ["login", "bash", "sh"] {
+        for name in ["bash", "sh"] {
             let program = layout.bin().join(name);
             if program.exists() {
                 return Shell {
+                    needs_linker: layout.needs_linker(&program),
                     program,
+                    args: vec!["-l".into()],
                     arg0: None,
-                    needs_linker: true,
                 };
             }
         }
     }
     Shell {
         program: SYSTEM_SHELL.into(),
+        args: Vec::new(),
         arg0: Some("-sh".into()),
         needs_linker: false,
     }
@@ -206,18 +217,30 @@ where
     set("COLORTERM", "truecolor".into());
     set("LANG", "en_US.UTF-8".into());
     set("FERRUX_VERSION", env!("CARGO_PKG_VERSION").into());
-    set("FERRUX_PREFIX", prefix);
+    set("FERRUX_PREFIX", prefix.clone());
     set("FERRUX_APP_PACKAGE", APP_PACKAGE.into());
     if !bootstrapped {
         // Android's mksh would read /system/etc/mkshrc, whose prompt is the
         // full path and scrolls the line editor on phone-width terminals.
         set("ENV", path_str(layout.shell_rc()));
     }
+    if bootstrapped {
+        set("SHELL", path_str(default_shell(layout).program));
+        // Packages from termux-packages read these (termux-tools, termux-exec,
+        // patched upstream code); they are part of the packages' ABI. We do
+        // NOT export TERMUX_VERSION: tools use it to detect the Termux app and
+        // its APIs (termux-am, Termux:API), which Ferrux does not provide.
+        // See docs/PACKAGES.md.
+        set("TERMUX__PREFIX", prefix.clone());
+        set("TERMUX__ROOTFS", path_str(layout.files_dir().to_path_buf()));
+        set("TERMUX__HOME", path_str(layout.home()));
+        set("TERMUX_APP__PACKAGE_NAME", APP_PACKAGE.into());
+    }
     if let Some(lib) = layout.exec_preload_lib() {
+        // termux-exec: routes exec() of prefix programs through the system
+        // linker and fixes /bin/sh-style shebangs.
         set("LD_PRELOAD", path_str(lib));
     }
-    // TODO(M3): decide on TERMUX__* / TERMUX_EXEC__* compatibility variables
-    // (RESEARCH.md §3.3, §14) once packages are built for dev.ferrux.
     env
 }
 
@@ -292,9 +315,19 @@ mod tests {
 
         let shell = default_shell(&layout);
         assert_eq!(shell.program, layout.bin().join("bash"));
+        assert_eq!(shell.args, ["-l"]);
         assert!(shell.needs_linker);
+        assert!(!layout.needs_linker(Path::new(SYSTEM_SHELL)));
         let env = build_env(&layout, std::iter::empty::<(&str, &str)>());
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        let bash = layout.bin().join("bash").to_string_lossy().into_owned();
+        assert_eq!(get("SHELL").as_deref(), Some(bash.as_str()));
+        assert_eq!(
+            get("TERMUX__PREFIX"),
+            Some(layout.prefix().to_string_lossy().into_owned())
+        );
+        assert_eq!(get("TERMUX_VERSION"), None);
+        assert_eq!(get("ENV"), None, "mksh rc only without a bootstrap");
         assert_eq!(
             get("TMPDIR"),
             Some(layout.prefix_tmp().to_string_lossy().into_owned())

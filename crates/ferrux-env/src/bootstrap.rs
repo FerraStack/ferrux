@@ -1,44 +1,133 @@
 // SPDX-License-Identifier: Apache-2.0
 //! First-run setup and bootstrap installation.
 //!
-//! [`prepare_dirs`] is real. [`install`] is a stub for milestone M3; the plan
-//! (RESEARCH.md §1.3, §11):
+//! The bootstrap is a zip of a minimal prefix (bash, apt, coreutils, …) built
+//! by [ferrux-packages](https://github.com/FerraStack/ferrux-packages) for
+//! `dev.ferrux`. The app downloads the archive pinned in [`PINNED`] (see
+//! `docs/PACKAGES.md`) and hands it to [`install`], which:
 //!
-//! 1. Obtain the bootstrap zip for the device ABI (bundled in the APK or
-//!    downloaded and checksum-verified), built from the `ferrux-packages` fork
-//!    with `TERMUX_APP__PACKAGE_NAME=dev.ferrux`.
-//! 2. Wipe and extract it into [`Layout::staging_prefix`], recreating the
-//!    symlinks listed in `SYMLINKS.txt` and setting `0700` on `bin/`,
-//!    `libexec/` and friends.
-//! 3. `fsync`, then atomically `rename(usr-staging, usr)`. A crash at any
-//!    point leaves either no prefix or a complete one.
-//! 4. Run second-stage setup (`$PREFIX/etc/termux/bootstrap/...`) through the
-//!    system linker with the termux-exec preload.
+//! 1. verifies the archive's SHA-256 against the pin;
+//! 2. extracts it into a fresh [`Layout::staging_prefix`], refusing entries
+//!    that would escape it, keeping the Unix permissions stored in the zip
+//!    and making everything in `bin/`, `libexec/` and `lib/apt/` executable;
+//! 3. recreates the symlinks listed in `SYMLINKS.txt` (`target←link`, one per
+//!    line; zips do not store symlinks portably);
+//! 4. flushes the filesystem and atomically renames the staging directory to
+//!    [`Layout::prefix`]. A crash at any point leaves either no prefix or a
+//!    complete one; a leftover staging directory is wiped on the next try.
 
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, BufRead, Read};
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Component, Path, PathBuf};
+
+use sha2::{Digest, Sha256};
 
 use crate::Layout;
+
+/// Release of `FerraStack/ferrux-packages` whose bootstrap archives this
+/// build of Ferrux installs.
+pub const BOOTSTRAP_RELEASE: &str = "bootstrap-2026.11.08-r2";
+
+/// A bootstrap archive pinned by URL and SHA-256.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinnedBootstrap {
+    /// termux-packages architecture name (`aarch64`, `x86_64`).
+    pub arch: &'static str,
+    /// Lower-case hex SHA-256 of the zip.
+    pub sha256: &'static str,
+}
+
+/// Archives of [`BOOTSTRAP_RELEASE`], one per supported architecture.
+pub const PINNED: &[PinnedBootstrap] = &[
+    PinnedBootstrap {
+        arch: "aarch64",
+        sha256: "4d17a513f54e2f68792e17c13b5c0ac75331d01bdc21d36314bacdc0c261a5b3",
+    },
+    PinnedBootstrap {
+        arch: "x86_64",
+        sha256: "679556269e46b6d515341a88400d3e045a2753d583882f29839f15feb60e15ad",
+    },
+];
+
+impl PinnedBootstrap {
+    /// The pin for the architecture this library was compiled for.
+    pub fn current() -> Option<&'static PinnedBootstrap> {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else {
+            return None;
+        };
+        PINNED.iter().find(|p| p.arch == arch)
+    }
+
+    /// Download URL (a GitHub Release asset).
+    pub fn url(&self) -> String {
+        format!(
+            "https://github.com/FerraStack/ferrux-packages/releases/download/{BOOTSTRAP_RELEASE}/bootstrap-{}.zip",
+            self.arch
+        )
+    }
+}
+
+/// Which part of [`install`] is running, for progress reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Hashing the archive; progress is in bytes.
+    Verify,
+    /// Extracting; progress is in zip entries.
+    Extract,
+    /// Creating symlinks, flushing and renaming into place.
+    Finish,
+}
 
 /// Errors from [`install`].
 #[derive(Debug)]
 pub enum InstallError {
-    /// Bootstrap installation lands in milestone M3.
-    NotImplemented,
+    /// The archive's SHA-256 does not match the pin (corrupt or tampered).
+    Checksum {
+        expected: String,
+        actual: String,
+    },
+    /// The archive is not a valid zip.
+    Archive(String),
+    /// An entry or symlink would land outside the prefix.
+    UnsafePath(String),
     Io(io::Error),
 }
 
 impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InstallError::NotImplemented => {
-                f.write_str("bootstrap installation is not implemented yet (M3)")
-            }
+            InstallError::Checksum { expected, actual } => write!(
+                f,
+                "bootstrap checksum mismatch (expected {expected}, got {actual})"
+            ),
+            InstallError::Archive(e) => write!(f, "bootstrap archive is invalid: {e}"),
+            InstallError::UnsafePath(p) => write!(f, "bootstrap entry escapes the prefix: {p}"),
             InstallError::Io(e) => write!(f, "bootstrap installation failed: {e}"),
         }
     }
 }
 
 impl std::error::Error for InstallError {}
+
+impl From<io::Error> for InstallError {
+    fn from(e: io::Error) -> Self {
+        InstallError::Io(e)
+    }
+}
+
+impl From<zip::result::ZipError> for InstallError {
+    fn from(e: zip::result::ZipError) -> Self {
+        match e {
+            zip::result::ZipError::Io(e) => InstallError::Io(e),
+            e => InstallError::Archive(e.to_string()),
+        }
+    }
+}
 
 /// The `$ENV` startup file for system-shell sessions: a short `~ $` prompt
 /// and coloured `ls`. Users customise via `~/.mkshrc`, sourced last.
@@ -53,41 +142,416 @@ if [ -r "$HOME/.mkshrc" ]; then . "$HOME/.mkshrc"; fi
 /// Creates the directories and files a session needs even without a
 /// bootstrap (`$HOME`, the fallback `$TMPDIR`, the shell rc). Idempotent.
 pub fn prepare_dirs(layout: &Layout) -> io::Result<()> {
-    std::fs::create_dir_all(layout.home())?;
-    std::fs::create_dir_all(layout.fallback_tmp())?;
-    std::fs::create_dir_all(layout.ferrux_dir())?;
-    std::fs::write(layout.shell_rc(), SHELL_RC)?;
+    fs::create_dir_all(layout.home())?;
+    fs::create_dir_all(layout.fallback_tmp())?;
+    fs::create_dir_all(layout.ferrux_dir())?;
+    fs::write(layout.shell_rc(), SHELL_RC)?;
     Ok(())
 }
 
-/// Installs a bootstrap archive into the prefix. Not implemented yet.
-pub fn install(_layout: &Layout, _archive: &std::path::Path) -> Result<(), InstallError> {
-    // TODO(M3): implement the staged extraction described in the module docs.
-    Err(InstallError::NotImplemented)
+/// Lower-case hex SHA-256 of a file, reporting `(bytes read, total)`.
+pub fn sha256_file(path: &Path, progress: &mut dyn FnMut(u64, u64)) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let total = file.metadata()?.len();
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut done = 0u64;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        done += n as u64;
+        progress(done, total);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Verifies `archive` against `expected_sha256` and installs it as the
+/// prefix of `layout`, replacing any existing prefix. See the module docs.
+///
+/// `progress(stage, done, total)` is called from the calling thread.
+pub fn install(
+    layout: &Layout,
+    archive: &Path,
+    expected_sha256: &str,
+    progress: &mut dyn FnMut(Stage, u64, u64),
+) -> Result<(), InstallError> {
+    let actual = sha256_file(archive, &mut |d, t| progress(Stage::Verify, d, t))?;
+    if !actual.eq_ignore_ascii_case(expected_sha256.trim()) {
+        return Err(InstallError::Checksum {
+            expected: expected_sha256.trim().to_ascii_lowercase(),
+            actual,
+        });
+    }
+
+    let staging = layout.staging_prefix();
+    remove_dir_all_if_exists(&staging)?;
+    fs::create_dir_all(&staging)?;
+
+    let symlinks = extract(archive, &staging, &mut |d, t| {
+        progress(Stage::Extract, d, t)
+    })?;
+    progress(Stage::Finish, 0, 1);
+    for (target, link) in &symlinks {
+        let path = staging.join(safe_relative(link)?);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // A file of the same name may have been extracted (shouldn't happen
+        // with archives from generate-bootstraps.sh, but the list wins).
+        if path.symlink_metadata().is_ok() {
+            fs::remove_file(&path)?;
+        }
+        symlink(target, &path)?;
+    }
+    fs::create_dir_all(staging.join("tmp"))?;
+    sync_filesystem(&staging)?;
+
+    // Swap in atomically. An old prefix (reinstall, or a broken one without a
+    // shell) is moved aside first, then deleted.
+    let prefix = layout.prefix();
+    let old = layout.files_dir().join("usr-old");
+    remove_dir_all_if_exists(&old)?;
+    if prefix.symlink_metadata().is_ok() {
+        fs::rename(&prefix, &old)?;
+    }
+    fs::rename(&staging, &prefix)?;
+    remove_dir_all_if_exists(&old)?;
+    sync_filesystem(layout.files_dir())?;
+    progress(Stage::Finish, 1, 1);
+    log::info!(
+        "bootstrap installed into {} ({} symlinks)",
+        prefix.display(),
+        symlinks.len()
+    );
+    Ok(())
+}
+
+/// Extracts every entry of `archive` into `dest` and returns the parsed
+/// `SYMLINKS.txt` (which itself is not extracted).
+fn extract(
+    archive: &Path,
+    dest: &Path,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<Vec<(String, String)>, InstallError> {
+    let mut zip = zip::ZipArchive::new(io::BufReader::new(File::open(archive)?))?;
+    let total = zip.len() as u64;
+    let mut symlinks = Vec::new();
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i)?;
+        let raw_name = entry.name()?.into_owned();
+        let rel = entry
+            .enclosed_name()
+            .ok_or_else(|| InstallError::UnsafePath(raw_name.clone()))?;
+        let rel = safe_relative(&rel.to_string_lossy())?;
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let path = dest.join(&rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&path)?;
+        } else if rel == Path::new("SYMLINKS.txt") {
+            symlinks = parse_symlinks(io::BufReader::new(&mut entry))?;
+        } else {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mode = entry.unix_mode();
+            if mode.is_some_and(|m| m & 0o170000 == 0o120000) {
+                // A real symlink entry (zip -y): the content is the target.
+                let mut target = String::new();
+                entry.read_to_string(&mut target)?;
+                symlink(target, &path)?;
+            } else {
+                let mut out = File::create(&path)?;
+                io::copy(&mut entry, &mut out)?;
+                let mode = file_mode(&rel, mode);
+                out.set_permissions(fs::Permissions::from_mode(mode))?;
+            }
+        }
+        progress(i as u64 + 1, total);
+    }
+    Ok(symlinks)
+}
+
+/// Permissions for an extracted file: the zip's mode (owner bits only; the
+/// prefix is private to the app), forced executable in program directories.
+fn file_mode(rel: &Path, zip_mode: Option<u32>) -> u32 {
+    let mut mode = zip_mode.map_or(0o600, |m| {
+        let owner = m & 0o700;
+        owner | 0o600
+    });
+    let first = rel.components().next().and_then(|c| match c {
+        Component::Normal(s) => s.to_str(),
+        _ => None,
+    });
+    let executable_dir = matches!(first, Some("bin" | "libexec"))
+        || rel.starts_with("lib/apt/apt-helper")
+        || rel.starts_with("lib/apt/methods");
+    if executable_dir {
+        mode |= 0o700;
+    }
+    mode
+}
+
+/// Parses `SYMLINKS.txt`: `target←link` per line (U+2190 separator).
+fn parse_symlinks(reader: impl BufRead) -> Result<Vec<(String, String)>, InstallError> {
+    let mut out = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let (target, link) = line.split_once('←').ok_or_else(|| {
+            InstallError::Archive(format!("malformed SYMLINKS.txt line: {line:?}"))
+        })?;
+        out.push((target.to_owned(), link.to_owned()));
+    }
+    Ok(out)
+}
+
+/// A relative path with no `..`, root or prefix components (`./` is fine).
+fn safe_relative(path: &str) -> Result<PathBuf, InstallError> {
+    let mut out = PathBuf::new();
+    for c in Path::new(path).components() {
+        match c {
+            Component::Normal(s) => out.push(s),
+            Component::CurDir => {}
+            _ => return Err(InstallError::UnsafePath(path.to_owned())),
+        }
+    }
+    Ok(out)
+}
+
+fn remove_dir_all_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
+/// Flushes the filesystem holding `dir`, so a rename that follows cannot
+/// expose files whose data is not on disk yet.
+fn sync_filesystem(dir: &Path) -> io::Result<()> {
+    let dir = File::open(dir)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: syncfs only reads the fd, which `dir` keeps open.
+        if unsafe { libc::syncfs(dir.as_raw_fd()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    dir.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferrux-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Writes a zip shaped like generate-bootstraps.sh output.
+    fn make_archive(path: &Path, extra: &[(&str, &str, u32)]) -> String {
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.add_directory("bin/", opts).unwrap();
+        zip.start_file("bin/bash", opts.unix_permissions(0o755))
+            .unwrap();
+        zip.write_all(b"#!fake bash\n").unwrap();
+        zip.start_file("bin/apt", opts.unix_permissions(0o644))
+            .unwrap();
+        zip.write_all(b"fake apt\n").unwrap();
+        zip.start_file("etc/motd", opts.unix_permissions(0o644))
+            .unwrap();
+        zip.write_all(b"hello\n").unwrap();
+        for (name, content, mode) in extra {
+            zip.start_file(*name, opts.unix_permissions(*mode)).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.start_file("SYMLINKS.txt", opts).unwrap();
+        zip.write_all("bash←./bin/sh\n../etc/motd←./share/motd-link\n".as_bytes())
+            .unwrap();
+        zip.finish().unwrap();
+        sha256_file(path, &mut |_, _| {}).unwrap()
+    }
 
     #[test]
     fn prepare_dirs_is_idempotent() {
-        let dir =
-            std::env::temp_dir().join(format!("ferrux-bootstrap-test-{}", std::process::id()));
+        let dir = temp_dir("bootstrap-dirs");
         let layout = Layout::new(&dir);
         prepare_dirs(&layout).unwrap();
         prepare_dirs(&layout).unwrap();
         assert!(layout.home().is_dir());
         assert!(layout.fallback_tmp().is_dir());
+        assert_eq!(fs::read_to_string(layout.shell_rc()).unwrap(), SHELL_RC);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn installs_archive_with_symlinks_and_modes() {
+        let dir = temp_dir("bootstrap-install");
+        let archive = dir.join("bootstrap.zip");
+        let sha = make_archive(&archive, &[]);
+        let layout = Layout::new(dir.join("files"));
+        // A leftover staging dir from an interrupted attempt is replaced.
+        fs::create_dir_all(layout.staging_prefix().join("junk")).unwrap();
+
+        let mut stages = Vec::new();
+        install(&layout, &archive, &sha.to_uppercase(), &mut |s, _, _| {
+            if stages.last() != Some(&s) {
+                stages.push(s);
+            }
+        })
+        .unwrap();
+        assert_eq!(stages, [Stage::Verify, Stage::Extract, Stage::Finish]);
+
+        let prefix = layout.prefix();
+        assert!(layout.is_bootstrapped());
+        assert!(!layout.staging_prefix().exists());
         assert_eq!(
-            std::fs::read_to_string(layout.shell_rc()).unwrap(),
-            SHELL_RC
+            fs::read_link(prefix.join("bin/sh")).unwrap(),
+            Path::new("bash")
         );
-        assert!(matches!(
-            install(&layout, "x.zip".as_ref()),
-            Err(InstallError::NotImplemented)
-        ));
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            fs::read_to_string(prefix.join("share/motd-link")).unwrap(),
+            "hello\n"
+        );
+        let mode = |p: &str| fs::metadata(prefix.join(p)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("bin/bash"), 0o700);
+        assert_eq!(mode("bin/apt"), 0o700, "bin/ is always executable");
+        assert_eq!(mode("etc/motd"), 0o600);
+        assert!(prefix.join("tmp").is_dir());
+        assert!(!prefix.join("SYMLINKS.txt").exists());
+
+        // Reinstalling replaces the prefix.
+        fs::write(prefix.join("stale"), "x").unwrap();
+        install(&layout, &archive, &sha, &mut |_, _, _| {}).unwrap();
+        assert!(!prefix.join("stale").exists());
+        assert!(prefix.join("bin/bash").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_checksum_mismatch() {
+        let dir = temp_dir("bootstrap-sha");
+        let archive = dir.join("bootstrap.zip");
+        make_archive(&archive, &[]);
+        let layout = Layout::new(dir.join("files"));
+        let err = install(&layout, &archive, &"0".repeat(64), &mut |_, _, _| {}).unwrap_err();
+        assert!(matches!(err, InstallError::Checksum { .. }), "{err}");
+        assert!(!layout.prefix().exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_symlink_escaping_prefix() {
+        let dir = temp_dir("bootstrap-slip");
+        let archive = dir.join("bootstrap.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&archive).unwrap());
+        let opts = SimpleFileOptions::default();
+        zip.start_file("SYMLINKS.txt", opts).unwrap();
+        zip.write_all("/etc/passwd←../../evil\n".as_bytes())
+            .unwrap();
+        zip.finish().unwrap();
+        let sha = sha256_file(&archive, &mut |_, _| {}).unwrap();
+        let layout = Layout::new(dir.join("files"));
+        let err = install(&layout, &archive, &sha, &mut |_, _, _| {}).unwrap_err();
+        assert!(matches!(err, InstallError::UnsafePath(_)), "{err}");
+        assert!(!layout.prefix().exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pins_are_well_formed() {
+        for pin in PINNED {
+            assert_eq!(pin.sha256.len(), 64);
+            assert!(
+                pin.sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            );
+            assert!(
+                pin.url()
+                    .ends_with(&format!("/{BOOTSTRAP_RELEASE}/bootstrap-{}.zip", pin.arch))
+            );
+        }
+        if cfg!(any(target_arch = "aarch64", target_arch = "x86_64")) {
+            assert!(PinnedBootstrap::current().is_some());
+        }
+    }
+
+    /// Installs a real bootstrap zip (opt-in, it is ~25 MB):
+    /// `FERRUX_BOOTSTRAP_ZIP=bootstrap-x86_64.zip cargo test -p ferrux-env -- --ignored`
+    #[test]
+    #[ignore = "needs FERRUX_BOOTSTRAP_ZIP"]
+    fn installs_real_bootstrap() {
+        let Some(zip) = std::env::var_os("FERRUX_BOOTSTRAP_ZIP") else {
+            return;
+        };
+        let zip = PathBuf::from(zip);
+        let arch = if zip.to_string_lossy().contains("aarch64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        let pin = PINNED.iter().find(|p| p.arch == arch).unwrap();
+        let dir = temp_dir("bootstrap-real");
+        let layout = Layout::new(&dir);
+        install(&layout, &zip, pin.sha256, &mut |_, _, _| {}).unwrap();
+        let prefix = layout.prefix();
+        assert!(layout.is_bootstrapped());
+        assert_eq!(
+            fs::read_link(prefix.join("bin/sh")).unwrap(),
+            Path::new("dash")
+        );
+        assert!(prefix.join("bin/bash").is_file());
+        assert!(layout.exec_preload_lib().is_some());
+        // Absolute symlink into the compiled prefix (dangling off-device).
+        assert!(
+            fs::read_link(prefix.join("etc/apt/trusted.gpg.d/ferrux-packages.gpg"))
+                .unwrap()
+                .ends_with("share/termux-keyring/ferrux-packages.gpg")
+        );
+        assert!(
+            prefix
+                .join("etc/apt/sources.list.d/ferrux.sources")
+                .is_file()
+        );
+        let mode = fs::metadata(prefix.join("bin/bash"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o700, 0o700);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn modes() {
+        assert_eq!(file_mode(Path::new("bin/x"), Some(0o644)), 0o700);
+        assert_eq!(file_mode(Path::new("libexec/git-core/git"), None), 0o700);
+        assert_eq!(
+            file_mode(Path::new("lib/apt/methods/https"), Some(0o644)),
+            0o700
+        );
+        assert_eq!(file_mode(Path::new("lib/libz.so"), Some(0o755)), 0o700);
+        assert_eq!(file_mode(Path::new("etc/profile"), Some(0o644)), 0o600);
+        assert_eq!(file_mode(Path::new("etc/profile"), None), 0o600);
     }
 }
 

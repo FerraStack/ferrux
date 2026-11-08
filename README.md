@@ -6,9 +6,11 @@ It is part of [FerraStack](https://github.com/FerraStack). Ferride, the FerraSta
 code editor, reuses Ferrux's terminal crates and will talk to Ferrux over a Binder
 service.
 
-> **Status: early development (milestones M1 + part of M2).** The app runs Android's
-> `/system/bin/sh` in real pseudo-terminals with IME and extra-keys input. There is
-> no package manager yet: the bootstrap and `pkg`/`apt` arrive in M3. See
+> **Status: early development (milestones M1–M2, M3 in progress).** On first run
+> the app downloads a bootstrap (bash, apt, coreutils) into
+> `/data/data/dev.ferrux/files/usr`; sessions run `bash` through the system linker,
+> and `pkg install` works against the Ferrux repository. See
+> [docs/PACKAGES.md](docs/PACKAGES.md) for packages and
 > [docs/RESEARCH.md](docs/RESEARCH.md) for the design and roadmap.
 
 ## Architecture
@@ -36,7 +38,7 @@ service.
 │ crates/ferrux-pty      openpt + fork/exec (async-signal-safe child), resize,  │
 │                        exec modes Direct | Linker (/system/bin/linker64)      │
 │ crates/ferrux-env      package/prefix constants, layout, session env,         │
-│                        bootstrap installer (stub until M3)                    │
+│                        bootstrap installer (verify, extract, atomic rename)   │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -226,7 +228,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 
 See [docs/RESEARCH.md §12](docs/RESEARCH.md#12-mvp-milestones). Next up:
 
-- **M3:** bootstrap and packages via linker64 + termux-exec.
+- **M3:** bootstrap and packages via linker64 + termux-exec
+  ([docs/PACKAGES.md](docs/PACKAGES.md); packages are built in
+  [FerraStack/ferrux-packages](https://github.com/FerraStack/ferrux-packages)).
 - **M4:** selection, copy/paste, URLs, settings.
 - **M5:** the Ferride API, designed in [docs/API.md](docs/API.md).
 
