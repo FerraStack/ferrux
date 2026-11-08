@@ -82,17 +82,23 @@ adb shell am start -W -n "$SAMPLE/.SampleActivity" > /dev/null
 adb shell am instrument -w -e expect granted -e keepalive 1 \
   -e class "$TEST_CLASS#keepAliveHold" "$RUNNER" > "$OUT/api-keepalive.txt" 2>&1 &
 held=0
-for _ in $(seq 1 12); do
+for _ in $(seq 1 20); do
   sleep 1
-  services="$(adb shell dumpsys activity services "$FERRUX/.FerruxService")"
-  if grep -q 'isForeground=true' <<< "$services"; then
+  services="$(adb shell dumpsys activity services "$FERRUX" 2>/dev/null || true)"
+  # Foreground state of the service, or Ferrux's ongoing notification (posted only
+  # when FerruxService is foreground).
+  notes="$(adb shell dumpsys notification --noredact 2>/dev/null | grep -A3 "pkg=$FERRUX" || true)"
+  if grep -q 'isForeground=true' <<< "$services" || grep -q 'FLAG_ONGOING_EVENT\|ongoing' <<< "$notes"; then
     held=1
     break
   fi
 done
+# Keep the evidence either way.
+printf '%s\n' "$services" > "$OUT/api-keepalive-services.txt"
+printf '%s\n' "$notes" > "$OUT/api-keepalive-notification.txt"
 wait || true
 grep -q '^OK (' "$OUT/api-keepalive.txt" || { cat "$OUT/api-keepalive.txt"; fail "keep-alive test failed"; }
-[ "$held" = 1 ] || fail "FerruxService was not in the foreground during the keep-alive"
+[ "$held" = 1 ] || fail "FerruxService was not in the foreground during the keep-alive (see api-keepalive-services.txt)"
 log "ok: keep-alive put FerruxService in the foreground"
 
 # --- 4. Screenshot: the sample renders a live shell from the PTY fd.

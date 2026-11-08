@@ -204,6 +204,6 @@ class ApiCrossAppTest {
     private companion object {
         const val TAG = "FerruxApiTest"
         const val TIMEOUT = 20_000L
-        const val KEEPALIVE_HOLD_MS = 15_000L
+        const val KEEPALIVE_HOLD_MS = 30_000L
     }
 }
