@@ -629,3 +629,124 @@ fn adjacent_different_links_are_separate_spans() {
     assert_eq!((s.links[0].start, s.links[0].end), (0, 2));
     assert_eq!((s.links[1].start, s.links[1].end), (2, 4));
 }
+
+/// What toybox `clear` writes on Android (`clear | od -c` on the API 35 emulator).
+const TOYBOX_CLEAR: &[u8] = b"\x1b[2J\x1b[H";
+
+fn rows_text(t: &Terminal) -> Vec<String> {
+    let s = t.snapshot();
+    (0..s.rows).map(|r| s.row_text(r)).collect()
+}
+
+#[test]
+fn clear_moves_the_screen_into_history_and_homes_the_cursor() {
+    let mut t = term(5, 20);
+    for i in 0..10 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    t.feed(b"~ $ clear\r\n");
+    t.feed(TOYBOX_CLEAR);
+    t.feed(b"~ $ ");
+    assert_eq!(rows_text(&t), ["~ $", "", "", "", ""]);
+    let s = t.snapshot();
+    assert_eq!((s.cursor.row, s.cursor.col), (0, 4));
+    assert!(
+        s.history > 0,
+        "the cleared lines are still in the scrollback"
+    );
+}
+
+#[test]
+fn a_taller_screen_does_not_bring_back_cleared_output() {
+    // #30: `clear` with the soft keyboard up (a short screen), then hiding the
+    // keyboard: the engine alone would pull the cleared lines back into view.
+    let mut t = term(10, 20);
+    for i in 0..30 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    t.resize(TermSize::new(5, 20)); // keyboard up
+    t.feed(b"~ $ clear\r\n");
+    t.feed(TOYBOX_CLEAR);
+    t.feed(b"~ $ ");
+    assert_eq!(t.pullable(), 0);
+    t.resize(TermSize::new(10, 20)); // keyboard down
+    let rows = rows_text(&t);
+    assert_eq!(rows[0], "~ $", "{rows:?}");
+    assert!(rows[1..].iter().all(String::is_empty), "{rows:?}");
+    let s = t.snapshot();
+    assert_eq!((s.cursor.row, s.cursor.col), (0, 4));
+    // Typing still lands on the prompt line, and the history is intact.
+    t.feed(b"ls");
+    assert_eq!(t.snapshot().row_text(0), "~ $ ls");
+    t.scroll(10);
+    assert!(
+        rows_text(&t).contains(&"line29".to_owned()),
+        "{:?}",
+        rows_text(&t)
+    );
+}
+
+#[test]
+fn ris_and_ed3_also_stop_lines_coming_back() {
+    for clear in [&b"\x1bc"[..], b"\x1b[H\x1b[2J\x1b[3J", b"\x1b[3J\x1b[2J"] {
+        let mut t = term(10, 20);
+        for i in 0..30 {
+            t.feed(format!("line{i}\r\n").as_bytes());
+        }
+        t.resize(TermSize::new(5, 20));
+        t.feed(clear);
+        t.feed(b"\x1b[H$ ");
+        t.resize(TermSize::new(10, 20));
+        assert_eq!(
+            t.snapshot().row_text(0),
+            "$",
+            "{clear:?}: {:?}",
+            rows_text(&t)
+        );
+    }
+}
+
+#[test]
+fn a_shorter_then_taller_screen_restores_the_lines() {
+    // Without a clear, closing the keyboard shows the lines it pushed off again.
+    let mut t = term(10, 20);
+    for i in 0..20 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    t.feed(b"$ ");
+    let before = rows_text(&t);
+    t.resize(TermSize::new(5, 20));
+    assert_eq!(t.snapshot().row_text(4), "$");
+    t.resize(TermSize::new(10, 20));
+    assert_eq!(rows_text(&t), before);
+    assert_eq!(t.snapshot().cursor.row, 9);
+}
+
+#[test]
+fn output_on_a_short_screen_fills_a_taller_one_from_history() {
+    let mut t = term(10, 20);
+    t.feed(b"$\r\n");
+    t.resize(TermSize::new(5, 20));
+    for i in 0..8 {
+        t.feed(format!("out{i}\r\n").as_bytes());
+    }
+    t.feed(b"$ ");
+    t.resize(TermSize::new(10, 20));
+    let rows = rows_text(&t);
+    assert_eq!(rows[9], "$", "{rows:?}");
+    assert_eq!(rows[0], "$", "{rows:?}");
+    assert_eq!(rows[1], "out0", "{rows:?}");
+}
+
+#[test]
+fn a_clear_split_across_reads_is_seen() {
+    let mut t = term(10, 20);
+    for i in 0..30 {
+        t.feed(format!("line{i}\r\n").as_bytes());
+    }
+    t.resize(TermSize::new(5, 20));
+    t.feed(b"\x1b[");
+    t.feed(b"2J\x1b[H$ ");
+    t.resize(TermSize::new(10, 20));
+    assert_eq!(t.snapshot().row_text(0), "$");
+}

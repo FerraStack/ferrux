@@ -324,6 +324,23 @@ if [ "$MODE" = smoke ]; then
   exit 0
 fi
 
+log "02b: clear empties the screen, also after the keyboard closes (#30)"
+# `clear` (toybox) writes ESC[2J ESC[H. With the keyboard up the grid is short;
+# hiding the keyboard must not pull the cleared lines back into view.
+type_line 'seq%s1%s60'
+expect_screen '^60$' "60 lines printed"
+run_line 'clear'
+[ "$(grid_lines | head -n1)" = '~ $' ] || { grid_lines | head -n5; fail "after clear the first row is not the prompt"; }
+rows_clear="$(header_field rows)"
+log "ok: cleared with the keyboard up ($rows_clear rows)"
+hide_ime
+expect_screen "rows=$ROWS_FULL " "keyboard hidden, full grid"
+first="$(grid_lines | head -n1)"
+[ "$first" = '~ $' ] || { grid_lines | head -n5; fail "the cleared output came back when the keyboard closed (first row: '$first')"; }
+[ -z "$(grid_lines | sed -n '2,$p' | grep -v '^$')" ] || { grid_lines | head -n5; fail "rows below the prompt are not empty"; }
+log "ok: first row is the prompt, the rest is empty ($rows_clear -> $ROWS_FULL rows)"
+shot 02b-clear
+
 log "03: ls + colours"
 adb shell "run-as $PKG sh -c 'cat > files/home/colors.sh'" < "$HERE/ci-colors.sh"
 type_line 'ls%s-la%s/system'
