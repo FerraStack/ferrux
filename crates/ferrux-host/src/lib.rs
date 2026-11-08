@@ -453,9 +453,8 @@ impl Host {
 
     /// Programs inside the app's data directory must run through the system
     /// linker on Android (targetSdk >= 29).
-    // TODO(#5): use ferrux-env's exec-mode API once it exists.
     fn exec_mode_for(&self, program: &Path) -> ExecMode {
-        if cfg!(target_os = "android") && program.starts_with(self.layout.files_dir()) {
+        if cfg!(target_os = "android") && self.layout.needs_linker(program) {
             ExecMode::system_linker()
         } else {
             ExecMode::Direct
