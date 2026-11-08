@@ -98,7 +98,9 @@ the terminal, which shrinks while it is shown, so it never covers the line you a
 on. Writes over 1 MiB are ignored.
 
 Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font size
-is saved. Switching to another app and back keeps the terminal as it was, including the
+is saved. Also on a hardware keyboard, as in Termux: Ctrl+Alt+C opens a new session,
+Ctrl+Alt+↑ / ↓ (or P / N) switch to the previous / next one, and Ctrl+Alt+1…9 jump to
+a session. Switching to another app and back keeps the terminal as it was, including the
 soft keyboard.
 
 With TalkBack, the terminal reads like a page of text: explore by touch or swipe to hear
@@ -208,7 +210,8 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     a process restart (saved zoom); exited sessions (notice, drawer badge,
     restart in the same directory, swipe to close, clean exit closes); the
     notification (session count, tap to open, Exit closes everything, wake lock);
-    keep screen on; and the screen reader (rows as text nodes, announced output).
+    keep screen on; the screen reader (rows as text nodes, announced output); and the
+    Ctrl+Alt session shortcuts.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

@@ -108,6 +108,13 @@ class TerminalView @JvmOverloads constructor(
      */
     var onTextSizeChanged: ((Float) -> Unit)? = null
 
+    /**
+     * Ctrl+Alt key presses from a hardware keyboard that the host app may claim (e.g.
+     * session switching). Return true to consume the key; otherwise it goes to the
+     * terminal as usual. Ctrl+Alt+= / - (zoom) are handled before this.
+     */
+    var onShortcut: ((KeyEvent) -> Boolean)? = null
+
     /** Font size in pixels. */
     var textSizePx: Float = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_SP, DEFAULT_TEXT_SIZE_SP, resources.displayMetrics,
@@ -1139,6 +1146,7 @@ class TerminalView @JvmOverloads constructor(
                 zoomBy(factor)
                 return true
             }
+            if (onShortcut?.invoke(event) == true) return true
         }
         val meta = event.metaState
         val special = specialKey(keyCode)
