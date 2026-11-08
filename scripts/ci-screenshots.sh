@@ -698,6 +698,9 @@ type_text 'echo%s'
 rows="$(ui_field rows)"
 long_press $(cell_xy "$((rows - 1))" 10)
 tap_text Paste
+# The paste is asynchronous: wait for it on the prompt line before pressing Enter,
+# or Enter can overtake it.
+expect_screen '^~ \$ echo FERRUXWORD$' "pasted text is on the prompt line"
 adb shell input keyevent KEYCODE_ENTER
 expect_screen '^FERRUXWORD$' "pasted text reached the shell"
 hide_ime
@@ -1010,6 +1013,216 @@ adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on
 wait_for "keep screen on sets the window flag" screen_kept_on
 adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on false > /dev/null
 wait_for "turning it off clears the flag" not screen_kept_on
+
+# Back to the home directory, so run_line sees the usual "~ $" prompt.
+type_line 'cd'
+expect_screen '^~ \$' "back in ~"
+hide_ime
+
+# --- Settings ----------------------------------------------------------------
+
+# open_settings: drawer → Settings (the ☰ extra key, or an edge swipe when the
+# extra keys are hidden), then waits for the theme picker.
+open_settings() {
+  hide_ime
+  if [ -n "$(node 'content-desc="Sessions"')" ]; then
+    tap_node 'content-desc="Sessions"'
+  else
+    local y
+    y="$(ui_field origin | cut -d, -f2)"
+    adb shell input swipe 2 $((y + 600)) 500 $((y + 600)) 300
+  fi
+  tap_node 'text="Settings"'
+  wait_node 'Ferrux Night theme' > /dev/null
+}
+
+close_settings() {
+  adb shell input keyevent KEYCODE_BACK
+  local i
+  for i in $(seq 1 20); do
+    [ -z "$(node 'Ferrux Night theme')" ] && return 0
+    sleep 0.5
+  done
+  fail "Settings did not close"
+}
+
+# settings_tap <fixed string>: scrolls the settings list until a node matching
+# it is on screen, then taps it.
+settings_tap() {
+  local i n
+  for i in $(seq 1 8); do
+    n="$(node "$1")"
+    if [ -n "$n" ]; then
+      tap_bounds "$n"
+      return 0
+    fi
+    adb shell input swipe 540 1700 540 1000 400
+    sleep 0.5
+  done
+  ui_dump > "$OUT/ui-missing.xml"
+  fail "no settings item matching $1 (see ui-missing.xml)"
+}
+
+log "25: Settings screen"
+open_settings
+expect_ui settings '^theme:ferrux-night,' "default theme"
+sleep 1
+shot 25-settings
+
+log "26: each colour theme recolours the terminal"
+for theme in "gruvbox-dark:Gruvbox Dark:#282828" "nord:Nord:#2E3440" "dracula:Dracula:#282A36" \
+  "solarized-dark:Solarized Dark:#002B36" "solarized-light:Solarized Light:#FDF6E3" \
+  "ferrux-night:Ferrux Night:#0E1116"; do
+  IFS=: read -r id name bg <<< "$theme"
+  tap_node "content-desc=\"$name theme\""
+  expect_ui settings "^theme:$id," "picked $name"
+  expect_ui defaultBg "^$bg\$" "the terminal's background is $name's"
+  sleep 1
+  shot "26-settings-$id"
+done
+
+log "27: a light theme in the terminal"
+tap_node 'content-desc="Solarized Light theme"'
+expect_ui defaultBg '^#FDF6E3$' "Solarized Light applied"
+close_settings
+run_line 'clear'
+type_line 'sh%scolors.sh'
+expect_screen '^truecolor ok$' "colour test ran"
+hide_ime
+shot 27-terminal-solarized-light
+
+log "28: cursor style and blink"
+open_settings
+tap_node 'content-desc="Nord theme"'
+settings_tap 'text="Underline"'
+expect_ui settings ',cursor:UNDERLINE,' "Underline saved"
+close_settings
+expect_ui cursorDrawn '^underline$' "the grid draws an underline cursor"
+shot 28-cursor-underline
+open_settings
+settings_tap 'text="Bar"'
+expect_ui settings ',cursor:BAR,' "Bar saved"
+close_settings
+expect_ui cursorDrawn '^bar$' "the grid draws a bar cursor"
+expect_ui cursorBlink '^0$' "not blinking yet"
+shot 29-cursor-bar
+open_settings
+settings_tap 'Blinking cursor'
+expect_ui settings ',blink:true,' "blink saved"
+close_settings
+expect_ui cursorBlink '^1$' "the cursor blinks"
+
+log "29: font size"
+cols_before="$(ui_field cols)"
+open_settings
+for i in 1 2 3; do settings_tap 'content-desc="Larger text"'; done
+expect_ui settings ',fontSize:16.0,' "font size 13 -> 16 sp"
+sleep 1
+shot 30-settings-font-size
+close_settings
+expect_ui textSizeSp '^16\.0$' "the terminal uses 16 sp"
+cols_big="$(ui_field cols)"
+[ "$cols_big" -lt "$cols_before" ] || fail "columns did not shrink with a larger font ($cols_before -> $cols_big)"
+log "ok: $cols_before -> $cols_big columns"
+shot 31-terminal-16sp
+open_settings
+for i in 1 2 3; do settings_tap 'content-desc="Smaller text"'; done
+expect_ui settings ',fontSize:13.0,' "back to 13 sp"
+close_settings
+expect_ui cols "^$cols_before\$" "columns restored"
+
+log "30: extra-keys presets"
+open_settings
+settings_tap 'text="One row"'
+expect_ui settings ',extraKeys:ONE_ROW,' "One row saved"
+close_settings
+wait_node 'content-desc="ESC"' > /dev/null
+[ -z "$(node 'content-desc="PGUP"')" ] || fail "PGUP is still shown with one row"
+log "ok: one row of extra keys"
+shot 32-extra-keys-one-row
+open_settings
+settings_tap 'text="Hidden"'
+expect_ui settings ',extraKeys:HIDDEN,' "Hidden saved"
+close_settings
+sleep 1
+[ -z "$(node 'content-desc="ESC"')" ] || fail "extra keys still shown"
+log "ok: no extra keys"
+open_settings # by edge swipe
+settings_tap 'text="Two rows"'
+expect_ui settings ',extraKeys:TWO_ROWS,' "Two rows saved"
+close_settings
+wait_node 'content-desc="PGUP"' > /dev/null
+expect_screen "rows=$ROWS_FULL " "full grid again"
+
+log "31: keep screen on"
+screen_kept_on && fail "FLAG_KEEP_SCREEN_ON set before enabling it"
+open_settings
+settings_tap 'Keep screen on'
+expect_ui settings ',keepScreenOn:true,' "keep screen on saved"
+close_settings
+wait_for "the Settings switch sets FLAG_KEEP_SCREEN_ON" screen_kept_on
+open_settings
+settings_tap 'Keep screen on'
+expect_ui settings ',keepScreenOn:false,' "keep screen on off"
+close_settings
+wait_for "turning it off clears the flag" not screen_kept_on
+open_settings
+settings_tap 'Close sessions that exit cleanly'
+expect_ui settings ',closeOnCleanExit:false,' "close-on-clean-exit off"
+settings_tap 'Close sessions that exit cleanly'
+expect_ui settings ',closeOnCleanExit:true,' "and on again"
+close_settings
+
+log "32: OSC 52 policy: Deny and Allow"
+open_settings
+settings_tap 'text="Deny"'
+expect_ui settings ',clipboard:OFF$' "Deny saved"
+close_settings
+clip_before="$(ui_field clipboard)"
+[ "$clip_before" != OSC52-OK ] || fail "clipboard already holds the OSC 52 text"
+type_line 'sh%sosc52.sh'
+expect_screen '^osc52 sent$' "the program sent OSC 52"
+hide_ime
+sleep 2
+[ -z "$(node 'wants to copy')" ] || fail "asked although the policy is Deny"
+expect_ui clipboard "^$clip_before\$" "Deny left the clipboard alone"
+open_settings
+settings_tap 'text="Allow"'
+expect_ui settings ',clipboard:ALLOW$' "Allow saved"
+close_settings
+run_line 'clear'
+type_line 'sh%sosc52.sh'
+expect_screen '^osc52 sent$' "the program sent OSC 52"
+hide_ime
+expect_ui clipboard '^OSC52-OK$' "Allow copied without asking"
+[ -z "$(node 'wants to copy')" ] || fail "asked although the policy is Allow"
+
+log "33: bell modes"
+adb shell "run-as $PKG sh -c 'cat > files/home/bell.sh'" < "$HERE/ci-bell.sh"
+open_settings
+settings_tap 'text="Beep"'
+expect_ui settings ',bell:BEEP,' "Beep saved"
+close_settings
+type_line 'sh%sbell.sh'
+expect_screen '^bell rung$' "a program rang the bell (Beep)"
+hide_ime
+check_crash
+open_settings
+settings_tap 'text="Silent"'
+expect_ui settings ',bell:SILENT,' "Silent saved"
+sleep 1
+shot 33-settings-behaviour
+close_settings
+
+log "34: settings survive a restart and apply to new sessions"
+adb shell am force-stop "$PKG"
+adb shell am start -W -n "$ACTIVITY" > /dev/null
+expect_screen '^sessions=1 ' "fresh session after the restart"
+expect_screen '^~ \$' "shell prompt"
+expect_ui settings '^theme:nord,fontSize:13.0,cursor:BAR,blink:true,extraKeys:TWO_ROWS,bell:SILENT,closeOnCleanExit:true,keepScreenOn:false,clipboard:ALLOW$' "all settings kept"
+expect_ui defaultBg '^#2E3440$' "the new session uses Nord"
+expect_ui cursorDrawn '^bar$' "and the bar cursor"
+shot 34-restart-nord
 
 check_crash
 log "all checks passed"

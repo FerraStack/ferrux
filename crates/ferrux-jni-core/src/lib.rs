@@ -110,6 +110,15 @@ pub const TERMINAL_NATIVES: &[NativeMethod<'static>] = &[
         static fn attach_pty(fd: jint, rows: jint, cols: jint) -> jlong,
         fn = natives::attach_pty,
     },
+    native_method! { static fn themes() -> JString[], fn = natives::themes },
+    native_method! {
+        static fn theme_colors(id: JString) -> jint[],
+        fn = natives::theme_colors,
+    },
+    native_method! {
+        static fn set_appearance(id: jlong, theme_id: JString, cursor_shape: jint) -> jboolean,
+        fn = natives::set_appearance,
+    },
 ];
 
 /// Binds [`TERMINAL_NATIVES`] to `class` (normally [`TERMINAL_CLASS`]).
@@ -422,6 +431,39 @@ mod natives {
             // A null array tells Kotlin the session is gone.
             None => Ok(JObjectArray::default()),
         }
+    }
+
+    pub fn themes<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JObjectArray<'local, JString<'local>>> {
+        new_string_array(env, &core::themes())
+    }
+
+    pub fn theme_colors<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+        id: JString<'local>,
+    ) -> JResult<JIntArray<'local>> {
+        match core::theme_colors(&id.try_to_string(env)?) {
+            Some(colors) => {
+                let array = JIntArray::new(env, colors.len())?;
+                array.set_region(env, 0, &colors)?;
+                Ok(array)
+            }
+            // null: no such theme.
+            None => Ok(JIntArray::default()),
+        }
+    }
+
+    pub fn set_appearance(
+        env: &mut Env<'_>,
+        _: JClass<'_>,
+        id: jlong,
+        theme: JString<'_>,
+        cursor: jint,
+    ) -> JResult<jboolean> {
+        Ok(core::set_appearance(id, &theme.try_to_string(env)?, cursor))
     }
 
     pub fn attach_pty(

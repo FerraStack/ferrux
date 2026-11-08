@@ -1,42 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.ferrux.app.ui
 
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.view.HapticFeedbackConstants
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.width
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.text
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import kotlin.math.abs
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -60,18 +54,33 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.ferrux.app.BellMode
 import dev.ferrux.app.ExitedSessionBackend
 import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
@@ -80,6 +89,7 @@ import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
+import kotlin.math.abs
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -115,6 +125,27 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     val appContext = LocalContext.current.applicationContext
     val settings = remember(appContext) { FerruxSettings.get(appContext) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+
+    val themeId by settings.theme.collectAsStateWithLifecycle()
+    val cursorStyle by settings.cursorStyle.collectAsStateWithLifecycle()
+    val cursorBlink by settings.cursorBlink.collectAsStateWithLifecycle()
+    val fontSizeSp by settings.fontSizeSp.collectAsStateWithLifecycle()
+    val extraKeys by settings.extraKeys.collectAsStateWithLifecycle()
+    val bell by settings.bell.collectAsStateWithLifecycle()
+
+    // Theme and cursor live in the native sessions (FerruxService also applies them, for
+    // sessions created without this screen); redraw with the new colours.
+    LaunchedEffect(manager, terminalView, themeId, cursorStyle) {
+        manager.setAppearance(TerminalTheme.byId(themeId).id, cursorStyle.code)
+        terminalView?.invalidate()
+    }
+    LaunchedEffect(terminalView, cursorBlink) { terminalView?.cursorBlink = cursorBlink }
+    // The Settings slider (pinch zoom saves to the same setting).
+    LaunchedEffect(terminalView, fontSizeSp) {
+        val size = fontSizeSp ?: return@LaunchedEffect
+        terminalView?.let { if (it.textSizeSp != size) it.textSizeSp = size }
+    }
 
     // "Keep screen on" (off by default): holds the window's KEEP_SCREEN_ON flag while
     // the terminal is shown.
@@ -152,11 +183,26 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
         manager.addOutputListener(listener)
         onDispose { manager.removeOutputListener(listener) }
     }
+    val bellMode by rememberUpdatedState(bell)
     LaunchedEffect(manager, terminalView) {
-        manager.bells.collect { id ->
-            if (id == manager.current.value) {
-                terminalView?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        // Created on the first beep; the emulator in CI, for one, has no audio.
+        var tone: ToneGenerator? = null
+        try {
+            manager.bells.collect { id ->
+                if (id != manager.current.value) return@collect
+                when (bellMode) {
+                    BellMode.VIBRATE -> terminalView?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    BellMode.BEEP -> {
+                        if (tone == null) {
+                            tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, BEEP_VOLUME) }.getOrNull()
+                        }
+                        tone?.startTone(ToneGenerator.TONE_PROP_BEEP, BEEP_MS)
+                    }
+                    BellMode.SILENT -> Unit
+                }
             }
+        } finally {
+            tone?.release()
         }
     }
     // OSC 52: ask before a program replaces the clipboard.
@@ -177,111 +223,137 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
         }
     }
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
+    BackHandler(enabled = settingsOpen) { settingsOpen = false }
+    // Typing goes back to the terminal when Settings closes.
+    LaunchedEffect(settingsOpen) { if (!settingsOpen) terminalView?.requestFocus() }
+    val openSettings = {
+        terminalView?.let { view ->
+            view.context.getSystemService(InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(view.windowToken, 0)
+        }
+        settingsOpen = true
+    }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        // Dragging is only enabled to close; opening uses the edge strip below
-        // so horizontal drags never fight with the terminal.
-        gesturesEnabled = drawerState.isOpen,
-        drawerContent = {
-            SessionDrawer(
-                sessions = sessions,
-                currentId = currentId,
-                onSelect = {
-                    manager.select(it)
-                    scope.launch { drawerState.close() }
-                },
-                onKill = manager::kill,
-                onNew = {
-                    onNewSession()
-                    scope.launch { drawerState.close() }
-                },
-            )
-        },
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(TerminalColors.Background)
-                // Status bar, navigation bar, display cutout and the IME: the
-                // terminal shrinks above the keyboard and the grid is resized.
-                .windowInsetsPadding(WindowInsets.safeDrawing),
+    Box(Modifier.fillMaxSize()) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            // Dragging is only enabled to close; opening uses the edge strip below
+            // so horizontal drags never fight with the terminal.
+            gesturesEnabled = drawerState.isOpen,
+            drawerContent = {
+                SessionDrawer(
+                    sessions = sessions,
+                    currentId = currentId,
+                    onSelect = {
+                        manager.select(it)
+                        scope.launch { drawerState.close() }
+                    },
+                    onKill = manager::kill,
+                    onNew = {
+                        onNewSession()
+                        scope.launch { drawerState.close() }
+                    },
+                    onSettings = {
+                        openSettings()
+                        scope.launch { drawerState.close() }
+                    },
+                )
+            },
         ) {
-            val closeExited by rememberUpdatedState(
-                current?.takeIf { it.exitCode != null }?.let { exited -> { manager.kill(exited.id) } },
-            )
-            Box(
+            Column(
                 Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .swipeToClose { closeExited?.invoke() },
+                    .fillMaxSize()
+                    .background(TerminalColors.Background)
+                    // Status bar, navigation bar, display cutout and the IME: the
+                    // terminal shrinks above the keyboard and the grid is resized.
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
             ) {
-                if (current != null) {
-                    AndroidView(
-                        factory = { context ->
-                            TerminalView(context).also { view ->
-                                view.stickyModifiers = sticky
-                                view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
-                                // The saved zoom, applied before the first layout so the pty
-                                // is sized once.
-                                settings.fontSizeSp.value?.let { view.textSizeSp = it }
-                                view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
-                                terminalView = view
-                                ActiveTerminal.view = java.lang.ref.WeakReference(view)
-                            }
-                        },
-                        update = { view ->
-                            // A running session talks to its process; an exited one turns
-                            // Enter / Esc into restart / close (see ExitedSessionBackend).
-                            val exited = current.exitCode != null
-                            val shown = when (val b = view.backend) {
-                                is ExitedSessionBackend -> exited && b.sessionId == current.id
-                                is NativeSessionBackend -> !exited && b.sessionId == current.id
-                                else -> false
-                            }
-                            if (!shown) {
-                                val id = current.id
-                                view.backend = if (exited) {
-                                    ExitedSessionBackend(
-                                        id,
-                                        onRestart = { manager.restart(id) },
-                                        onClose = { manager.kill(id) },
-                                    )
-                                } else {
-                                    NativeSessionBackend(id)
+                val closeExited by rememberUpdatedState(
+                    current?.takeIf { it.exitCode != null }?.let { exited -> { manager.kill(exited.id) } },
+                )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .swipeToClose { closeExited?.invoke() },
+                ) {
+                    if (current != null) {
+                        AndroidView(
+                            factory = { context ->
+                                TerminalView(context).also { view ->
+                                    view.stickyModifiers = sticky
+                                    view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
+                                    // The saved zoom, applied before the first layout so the pty
+                                    // is sized once.
+                                    settings.fontSizeSp.value?.let { view.textSizeSp = it }
+                                    view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
+                                    terminalView = view
+                                    ActiveTerminal.view = java.lang.ref.WeakReference(view)
                                 }
-                                view.requestFocus()
-                            }
-                        },
-                        onRelease = { if (terminalView === it) terminalView = null },
-                        modifier = Modifier.fillMaxSize(),
+                            },
+                            update = { view ->
+                                // A running session talks to its process; an exited one turns
+                                // Enter / Esc into restart / close (see ExitedSessionBackend).
+                                val exited = current.exitCode != null
+                                val shown = when (val b = view.backend) {
+                                    is ExitedSessionBackend -> exited && b.sessionId == current.id
+                                    is NativeSessionBackend -> !exited && b.sessionId == current.id
+                                    else -> false
+                                }
+                                if (!shown) {
+                                    val id = current.id
+                                    view.backend = if (exited) {
+                                        ExitedSessionBackend(
+                                            id,
+                                            onRestart = { manager.restart(id) },
+                                            onClose = { manager.kill(id) },
+                                        )
+                                    } else {
+                                        NativeSessionBackend(id)
+                                    }
+                                    view.requestFocus()
+                                }
+                            },
+                            onRelease = { if (terminalView === it) terminalView = null },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    EdgeSwipeStrip(
+                        onOpen = { scope.launch { drawerState.open() } },
+                        modifier = Modifier.align(Alignment.CenterStart),
                     )
                 }
-                EdgeSwipeStrip(
-                    onOpen = { scope.launch { drawerState.open() } },
-                    modifier = Modifier.align(Alignment.CenterStart),
+                // Transient prompts (the OSC 52 question) get their own space below the
+                // terminal, which shrinks while one is shown, so the prompt line the user
+                // is typing on stays visible.
+                SnackbarHost(snackbars, modifier = Modifier.fillMaxWidth()) { data ->
+                    FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                }
+                ExtraKeysRow(
+                    layout = ExtraKeysLayout.of(extraKeys),
+                    sticky = sticky,
+                    onKey = { code -> terminalView?.sendKey(code) },
+                    onText = { text -> terminalView?.sendText(text) },
+                    onAction = { action ->
+                        when (action) {
+                            ExtraKeyAction.Drawer -> scope.launch { drawerState.open() }
+                        }
+                    },
                 )
             }
-            // Transient prompts (the OSC 52 question) get their own space below the
-            // terminal, which shrinks while one is shown, so the prompt line the user
-            // is typing on stays visible.
-            SnackbarHost(snackbars, modifier = Modifier.fillMaxWidth()) { data ->
-                FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-            }
-            ExtraKeysRow(
-                layout = ExtraKeysLayout.Default,
-                sticky = sticky,
-                onKey = { code -> terminalView?.sendKey(code) },
-                onText = { text -> terminalView?.sendText(text) },
-                onAction = { action ->
-                    when (action) {
-                        ExtraKeyAction.Drawer -> scope.launch { drawerState.open() }
-                    }
-                },
-            )
+        }
+        AnimatedVisibility(
+            visible = settingsOpen,
+            enter = fadeIn() + slideInHorizontally { it / 6 },
+            exit = fadeOut() + slideOutHorizontally { it / 6 },
+        ) {
+            SettingsScreen(settings, onBack = { settingsOpen = false })
         }
     }
 }
+
+private const val BEEP_VOLUME = 60
+private const val BEEP_MS = 120
 
 /** A snackbar in the terminal's palette rather than Material's inverse colours. */
 @Composable
@@ -401,6 +473,7 @@ private fun SessionDrawer(
     onSelect: (Long) -> Unit,
     onKill: (Long) -> Unit,
     onNew: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     ModalDrawerSheet(Modifier.semantics { contentDescription = "Session drawer" }) {
         Text(
@@ -444,6 +517,14 @@ private fun SessionDrawer(
             onClick = onNew,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.settings)) },
+            icon = { Icon(painterResource(R.drawable.ic_settings), null) },
+            selected = false,
+            onClick = onSettings,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Spacer(Modifier.height(12.dp))
     }
 }
 

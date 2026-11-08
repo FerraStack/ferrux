@@ -41,7 +41,7 @@ object TerminalKeys {
 
 /** Layout of the IntArray filled by [TerminalNative.snapshot] (must match the Rust side). */
 object SnapshotLayout {
-    const val HEADER_SIZE = 10
+    const val HEADER_SIZE = 11
     const val INTS_PER_CELL = 4
 
     // Header indices.
@@ -57,6 +57,9 @@ object SnapshotLayout {
     /** Lines of scrollback above the screen (0 on the alternate screen). */
     const val H_HISTORY = 8
     const val H_DEFAULT_FG = 9
+
+    /** The theme's (or OSC 12's) cursor colour, ARGB. */
+    const val H_CURSOR_COLOR = 10
 
     // Cursor shape (low byte) and flags.
     const val CURSOR_HIDDEN = 0

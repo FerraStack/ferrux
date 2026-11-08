@@ -6,7 +6,7 @@
 //! only one library containing this crate.
 
 use std::cell::RefCell;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
 use std::io;
@@ -15,11 +15,21 @@ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use ferrux_pty::{PtyMaster, SpawnConfig, SpawnError};
 use ferrux_session::{Session, SessionEvent, SessionId, SessionManager};
 use ferrux_term::{
-    Key, Modifiers, MouseAction, MouseButton, SelectionKind, Snapshot, TermConfig, TermSize,
-    ViewPoint,
+    CursorShape, Key, Modifiers, MouseAction, MouseButton, Rgb, SelectionKind, Snapshot, THEMES,
+    TermConfig, TermSize, Theme, ViewPoint,
 };
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
+
+/// Terminal settings for new sessions (theme, cursor), set with [`set_appearance`].
+static DEFAULT_TERM: LazyLock<Mutex<TermConfig>> = LazyLock::new(Mutex::default);
+
+fn default_term() -> TermConfig {
+    DEFAULT_TERM
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
 
 /// Process-wide session manager (started lazily).
 pub fn manager() -> &'static SessionManager {
@@ -31,7 +41,7 @@ pub fn manager() -> &'static SessionManager {
 /// The host decides the program, `argv[0]`, environment, working directory
 /// and exec mode; this crate never does.
 pub fn spawn_session(config: &SpawnConfig) -> Result<SessionId, SpawnError> {
-    let session = manager().spawn(config, TermConfig::default())?;
+    let session = manager().spawn(config, default_term())?;
     log::info!(
         "session {} started: {} (pid {:?})",
         session.id(),
@@ -53,7 +63,7 @@ pub fn attach_pty(fd: RawFd, rows: u16, cols: u16) -> io::Result<SessionId> {
     // (`ParcelFileDescriptor.detachFd()`); nothing else closes it.
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let size = TermSize::new(rows.max(1), cols.max(1));
-    let session = manager().attach(PtyMaster::from_fd(fd), size, TermConfig::default())?;
+    let session = manager().attach(PtyMaster::from_fd(fd), size, default_term())?;
     log::info!("session {} attached to a pty", session.id());
     Ok(session.id())
 }
@@ -108,6 +118,56 @@ pub fn snapshot(id: i64, capacity: usize, sink: impl FnOnce(&[i32])) -> i32 {
 }
 
 /// A scroll gesture at a viewport cell; see `Session::scroll_gesture`.
+/// The bundled themes as `id \t name \t dark(0|1)`, default first.
+pub fn themes() -> Vec<String> {
+    THEMES
+        .iter()
+        .map(|t| format!("{}\t{}\t{}", t.id, t.name, t.dark as u8))
+        .collect()
+}
+
+/// A theme's colours as ARGB: `background, foreground, cursor, selection,
+/// accent`, then the 16 ANSI colours.
+pub fn theme_colors(id: &str) -> Option<Vec<i32>> {
+    let t = Theme::by_id(id)?;
+    let argb = |c: u32| Rgb::from_u32(c).to_argb() as i32;
+    let mut out = vec![
+        argb(t.background),
+        argb(t.foreground),
+        argb(t.cursor),
+        argb(t.selection),
+        argb(t.accent),
+    ];
+    out.extend(t.ansi.iter().map(|&c| argb(c)));
+    Some(out)
+}
+
+/// Applies a theme and default cursor shape (`CursorShape::code`; 0 keeps the
+/// current one) to session `id`, or to new sessions when `id` is 0. Returns
+/// false for an unknown session or theme.
+pub fn set_appearance(id: i64, theme: &str, cursor: i32) -> bool {
+    let Some(palette) = Theme::by_id(theme).map(Theme::palette) else {
+        return false;
+    };
+    let shape = CursorShape::from_code(cursor as u32);
+    if id == 0 {
+        let mut defaults = DEFAULT_TERM.lock().unwrap_or_else(|e| e.into_inner());
+        defaults.palette = palette;
+        if let Some(shape) = shape {
+            defaults.cursor_shape = shape;
+        }
+        return true;
+    }
+    let Some(s) = session(id) else { return false };
+    s.with_terminal(|t| {
+        t.set_palette(palette);
+        if let Some(shape) = shape {
+            t.set_cursor_shape(shape);
+        }
+    });
+    true
+}
+
 pub fn scroll_gesture(id: i64, lines: i32, row: i32, col: i32) {
     if let Some(s) = session(id) {
         s.scroll_gesture(lines, row.max(0) as usize, col.max(0) as usize);
@@ -226,6 +286,46 @@ mod tests {
 
     /// Ints before the first cell in the integer encoding.
     const H: usize = Snapshot::HEADER_LEN;
+
+    #[test]
+    fn themes_and_appearance() {
+        let themes = themes();
+        assert!(themes[0].starts_with("ferrux-night\tFerrux Night\t1"));
+        assert!(
+            themes
+                .iter()
+                .any(|t| t == "solarized-light\tSolarized Light\t0")
+        );
+        let nord = theme_colors("nord").unwrap();
+        assert_eq!(nord.len(), 5 + 16);
+        assert_eq!(nord[0] as u32, 0xFF2E_3440);
+        assert!(theme_colors("nope").is_none());
+        assert!(!set_appearance(0, "nope", 1));
+        assert!(!set_appearance(123_456, "nord", 1), "unknown session");
+        // New sessions pick up the default theme and cursor.
+        assert!(set_appearance(0, "dracula", CursorShape::Bar.code() as i32));
+        let config = SpawnConfig::new("/bin/sh")
+            .args(["-c", "read _"])
+            .env("PATH", "/usr/bin:/bin")
+            .cwd("/")
+            .size(WinSize::new(3, 10));
+        let id = spawn_session(&config).unwrap() as i64;
+        // Back to the defaults before asserting, so other tests are unaffected.
+        assert!(set_appearance(
+            0,
+            "ferrux-night",
+            CursorShape::Block.code() as i32
+        ));
+        let mut ints = Vec::new();
+        snapshot(id, 1000, |d| ints = d.to_vec());
+        assert_eq!(ints[6] as u32, 0xFF28_2A36, "dracula background");
+        assert_eq!(ints[4], 3, "bar cursor");
+        assert!(set_appearance(id, "nord", 0));
+        snapshot(id, 1000, |d| ints = d.to_vec());
+        assert_eq!(ints[6] as u32, 0xFF2E_3440);
+        assert_eq!(ints[4], 3, "cursor kept");
+        destroy_session(id);
+    }
 
     #[test]
     fn session_round_trip_through_core_api() {

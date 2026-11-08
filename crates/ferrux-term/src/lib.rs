@@ -33,7 +33,7 @@ use alacritty_terminal::term::{self, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{self, Color, CursorShape as EngineCursorShape, NamedColor};
 use alacritty_terminal::vte::{self, Params};
 
-pub use color::{Palette, Rgb};
+pub use color::{Palette, Rgb, THEMES, Theme};
 pub use keys::{Key, KeyMode, Modifiers};
 pub use mouse::{MouseAction, MouseButton, MouseMode};
 pub use selection::{SelectionKind, SelectionSpan, ViewPoint};
@@ -103,6 +103,8 @@ pub struct TermConfig {
     /// Characters that end a word for word selection (double tap, long
     /// press). See [`WORD_SEPARATORS`].
     pub word_separators: String,
+    /// Cursor shape until a program picks one (DECSCUSR).
+    pub cursor_shape: CursorShape,
 }
 
 /// Default word separators: like alacritty's, but without `:`, so a long
@@ -116,6 +118,7 @@ impl Default for TermConfig {
             palette: Palette::default(),
             bold_is_bright: true,
             word_separators: WORD_SEPARATORS.to_owned(),
+            cursor_shape: CursorShape::Block,
         }
     }
 }
@@ -209,11 +212,7 @@ impl Terminal {
     pub fn new(size: TermSize, config: TermConfig) -> Self {
         let size = size.clamped();
         let listener = Listener::default();
-        let engine_config = term::Config {
-            scrolling_history: config.scrollback,
-            semantic_escape_chars: config.word_separators.clone(),
-            ..term::Config::default()
-        };
+        let engine_config = Self::engine_config(&config);
         let term = Term::new(engine_config, &EngineSize(size), listener.clone());
         Self {
             term,
@@ -230,8 +229,52 @@ impl Terminal {
         }
     }
 
+    fn engine_config(config: &TermConfig) -> term::Config {
+        let shape = match config.cursor_shape {
+            CursorShape::Block => EngineCursorShape::Block,
+            CursorShape::Underline => EngineCursorShape::Underline,
+            CursorShape::Bar => EngineCursorShape::Beam,
+            CursorShape::HollowBlock => EngineCursorShape::HollowBlock,
+            CursorShape::Hidden => EngineCursorShape::Hidden,
+        };
+        term::Config {
+            scrolling_history: config.scrollback,
+            semantic_escape_chars: config.word_separators.clone(),
+            default_cursor_style: ansi::CursorStyle {
+                shape,
+                blinking: false,
+            },
+            ..term::Config::default()
+        }
+    }
+
     pub fn size(&self) -> TermSize {
         self.size
+    }
+
+    /// Switches the colour theme. Colours a program set with OSC 4/10/11/12
+    /// keep priority; the whole screen is redrawn.
+    pub fn set_palette(&mut self, palette: Palette) {
+        if self.config.palette != palette {
+            self.config.palette = palette;
+            // Same engine options: only forces full damage.
+            self.apply_engine_config();
+        }
+    }
+
+    /// Changes the cursor shape used until a program picks one (DECSCUSR).
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) {
+        if self.config.cursor_shape != shape {
+            self.config.cursor_shape = shape;
+            self.apply_engine_config();
+        }
+    }
+
+    fn apply_engine_config(&mut self) {
+        self.term.set_options(Self::engine_config(&self.config));
+        // set_options re-announces the title; that is not a change for the UI.
+        let mut queued = self.listener.0.lock().unwrap_or_else(|e| e.into_inner());
+        queued.retain(|e| !matches!(e, EngineEvent::Title(_) | EngineEvent::ResetTitle));
     }
 
     /// Parses output from the program.
@@ -587,6 +630,7 @@ impl Terminal {
         snap.history = self.term.grid().history_size();
         snap.default_fg = default_fg;
         snap.default_bg = default_bg;
+        snap.cursor_color = lookup(NamedColor::Cursor as usize, palette.cursor);
         snap.modes = self.modes();
         snap.cells.clear();
         snap.combining.clear();

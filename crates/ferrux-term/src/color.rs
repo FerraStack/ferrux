@@ -84,11 +84,41 @@ pub const FERRUX_NIGHT_ANSI: [u32; 16] = [
 ];
 
 impl Default for Palette {
-    /// [`FERRUX_NIGHT_ANSI`] plus the standard xterm 6×6×6 cube and grayscale
-    /// ramp for entries 16..256.
+    /// The "Ferrux Night" [`Theme`].
     fn default() -> Self {
+        THEMES[0].palette()
+    }
+}
+
+/// A bundled colour theme: the 16 ANSI colours and the special colours, as
+/// `0xRRGGBB`. Entries 16..256 are always the standard xterm cube and ramp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Theme {
+    /// Stable identifier, used in settings files.
+    pub id: &'static str,
+    /// Display name.
+    pub name: &'static str,
+    pub ansi: [u32; 16],
+    pub foreground: u32,
+    pub background: u32,
+    pub cursor: u32,
+    pub selection: u32,
+    /// Accent for the UI around the terminal (active toggles, switches).
+    pub accent: u32,
+    /// Whether the background is dark (for system bar icons and chrome).
+    pub dark: bool,
+}
+
+impl Theme {
+    /// Looks a theme up by [`Theme::id`].
+    pub fn by_id(id: &str) -> Option<&'static Theme> {
+        THEMES.iter().find(|t| t.id == id)
+    }
+
+    /// The full 256-colour palette.
+    pub fn palette(&self) -> Palette {
         let mut indexed = [Rgb::default(); 256];
-        for (i, c) in FERRUX_NIGHT_ANSI.iter().enumerate() {
+        for (i, c) in self.ansi.iter().enumerate() {
             indexed[i] = Rgb::from_u32(*c);
         }
         let level = |v: usize| if v == 0 { 0 } else { (55 + v * 40) as u8 };
@@ -99,15 +129,100 @@ impl Default for Palette {
             let v = (8 + i * 10) as u8;
             indexed[232 + i] = Rgb::new(v, v, v);
         }
-        Self {
+        Palette {
             indexed,
-            foreground: Rgb::from_u32(0xd6dce5),
-            background: Rgb::from_u32(0x0e1116),
-            cursor: Rgb::from_u32(0xf29e4c),
-            selection: Rgb::from_u32(0x264166),
+            foreground: Rgb::from_u32(self.foreground),
+            background: Rgb::from_u32(self.background),
+            cursor: Rgb::from_u32(self.cursor),
+            selection: Rgb::from_u32(self.selection),
         }
     }
 }
+
+const SOLARIZED_ANSI: [u32; 16] = [
+    0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5, //
+    0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
+];
+
+/// The bundled themes; the first is the default. Gruvbox, Nord, Dracula and
+/// Solarized use their published (MIT-licensed) palettes.
+pub const THEMES: &[Theme] = &[
+    Theme {
+        id: "ferrux-night",
+        name: "Ferrux Night",
+        ansi: FERRUX_NIGHT_ANSI,
+        foreground: 0xd6dce5,
+        background: 0x0e1116,
+        cursor: 0xf29e4c,
+        selection: 0x264166,
+        accent: 0xf29e4c,
+        dark: true,
+    },
+    Theme {
+        id: "gruvbox-dark",
+        name: "Gruvbox Dark",
+        ansi: [
+            0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984, //
+            0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
+        ],
+        foreground: 0xebdbb2,
+        background: 0x282828,
+        cursor: 0xebdbb2,
+        selection: 0x504945,
+        accent: 0xfe8019,
+        dark: true,
+    },
+    Theme {
+        id: "nord",
+        name: "Nord",
+        ansi: [
+            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0, //
+            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
+        ],
+        foreground: 0xd8dee9,
+        background: 0x2e3440,
+        cursor: 0xd8dee9,
+        selection: 0x434c5e,
+        accent: 0x88c0d0,
+        dark: true,
+    },
+    Theme {
+        id: "dracula",
+        name: "Dracula",
+        ansi: [
+            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2, //
+            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
+        ],
+        foreground: 0xf8f8f2,
+        background: 0x282a36,
+        cursor: 0xf8f8f2,
+        selection: 0x44475a,
+        accent: 0xbd93f9,
+        dark: true,
+    },
+    Theme {
+        id: "solarized-dark",
+        name: "Solarized Dark",
+        ansi: SOLARIZED_ANSI,
+        foreground: 0x839496,
+        background: 0x002b36,
+        cursor: 0x93a1a1,
+        selection: 0x073642,
+        accent: 0x268bd2,
+        dark: true,
+    },
+    Theme {
+        id: "solarized-light",
+        name: "Solarized Light",
+        ansi: SOLARIZED_ANSI,
+        foreground: 0x657b83,
+        background: 0xfdf6e3,
+        cursor: 0x586e75,
+        selection: 0xeee8d5,
+        accent: 0x268bd2,
+        dark: false,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -121,6 +236,24 @@ mod tests {
         assert_eq!(p.indexed[231], Rgb::new(255, 255, 255));
         assert_eq!(p.indexed[232], Rgb::new(8, 8, 8));
         assert_eq!(p.indexed[255], Rgb::new(238, 238, 238));
+    }
+
+    #[test]
+    fn themes_have_unique_ids_and_build_palettes() {
+        let mut ids: Vec<_> = THEMES.iter().map(|t| t.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), THEMES.len());
+        assert_eq!(
+            Palette::default(),
+            Theme::by_id("ferrux-night").unwrap().palette()
+        );
+        let nord = Theme::by_id("nord").unwrap().palette();
+        assert_eq!(nord.background, Rgb::from_u32(0x2e3440));
+        assert_eq!(nord.indexed[14], Rgb::from_u32(0x8fbcbb));
+        assert_eq!(nord.indexed[196], Rgb::new(255, 0, 0), "cube is shared");
+        assert!(Theme::by_id("nope").is_none());
+        assert!(!Theme::by_id("solarized-light").unwrap().dark);
     }
 
     #[test]

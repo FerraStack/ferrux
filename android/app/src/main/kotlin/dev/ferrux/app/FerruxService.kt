@@ -18,9 +18,10 @@ import android.util.Log
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import dev.ferrux.app.api.ApiRegistry
+import dev.ferrux.app.ui.TerminalTheme
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -72,6 +73,14 @@ class FerruxService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         sessions = SessionManager(applicationContext)
+        // Theme and cursor style live in the native sessions, so they follow the
+        // settings here rather than in the UI (sessions outlive the Activity).
+        val settings = FerruxSettings.get(this)
+        lifecycleScope.launch {
+            combine(settings.theme, settings.cursorStyle) { t, c -> t to c }.collect { (theme, cursor) ->
+                sessions.setAppearance(TerminalTheme.byId(theme).id, cursor.code)
+            }
+        }
         createNotificationChannel()
         lifecycleScope.launch {
             // Foreground while there are sessions or API clients need Ferrux (their

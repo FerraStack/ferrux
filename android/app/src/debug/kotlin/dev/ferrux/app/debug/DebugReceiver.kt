@@ -28,8 +28,9 @@ import java.util.Locale
  * Format: one `key=value` header line, then `---`, then the grid text.
  *
  * It also writes `files/debug-ui.txt`, one `key=value` per line: the terminal
- * view's geometry and selection state ([dev.ferrux.terminal.TerminalView.debugState])
- * and the clipboard text. Newlines in values are written as `\n`.
+ * view's geometry and selection state ([dev.ferrux.terminal.TerminalView.debugState]),
+ * the clipboard text and the settings ([FerruxSettings.debugState]). Newlines in values
+ * are written as `\n`.
  *
  * In the header, `view` is the identity of the on-screen TerminalView (0 if none)
  * and `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
@@ -101,6 +102,7 @@ class DebugReceiver : BroadcastReceiver() {
                     ?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
             }.getOrNull()
             append("clipboard=").append(clip.orEmpty().replace("\\", "\\\\").replace("\n", "\\n")).append('\n')
+            append("settings=").append(FerruxSettings.get(context).debugState()).append('\n')
         }
         File(context.filesDir, "debug-ui.txt").writeText(ui)
         ui.lineSequence().forEach { Log.i(TAG, "ui: $it") }
