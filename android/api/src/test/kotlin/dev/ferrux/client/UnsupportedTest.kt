@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: Apache-2.0
+package dev.ferrux.client
+
+import android.os.Binder
+import android.os.DeadObjectException
+import android.os.Parcel
+import android.os.RemoteException
+import dev.ferrux.api.ApiErrors
+import dev.ferrux.api.FerruxInfo
+import dev.ferrux.api.IFerruxApi
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+
+/** Issue #40: a newer client talking to an older Ferrux degrades, it doesn't disconnect. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class UnsupportedTest {
+    /** A Ferrux that knows none of the transactions (as an old one wouldn't know chmod). */
+    private class OldFerrux : Binder() {
+        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean = false
+    }
+
+    @Test
+    fun unknownTransactionIsUnsupportedNotDisconnected() {
+        // A real generated proxy over a binder that rejects the transaction.
+        val api = IFerruxApi.Stub.asInterface(OldFerrux())
+        try {
+            FerruxException.wrap { api.chmod("x", 0x1ED) }
+            fail("an unknown transaction must not succeed silently")
+        } catch (e: FerruxException.Unsupported) {
+            assertTrue(e.message, e.message!!.contains("chmod"))
+        }
+    }
+
+    @Test
+    fun exceptionMapping() {
+        fun map(t: Throwable) = FerruxException.from(t)
+        assertTrue(map(DeadObjectException()) is FerruxException.Disconnected)
+        assertTrue(map(RemoteException("transport broke")) is FerruxException.Disconnected)
+        assertTrue(map(RemoteException("Method chmod is unimplemented.")) is FerruxException.Unsupported)
+        assertTrue(map(SecurityException("nope")) is FerruxException.NotPermitted)
+        val api = map(ApiErrors.exception(IFerruxApi.ERR_OUTSIDE_HOME, "/etc: outside"))
+        assertTrue(api is FerruxException.Api && api.isOutsideHome)
+        assertEquals("/etc: outside", api.message)
+        assertTrue(map(ApiErrors.exception(IFerruxApi.ERR_UNSUPPORTED, "no")) is FerruxException.Unsupported)
+    }
+
+    @Test
+    fun capabilityGateAvoidsTheCall() = runBlocking {
+        val conn = FerruxConnection(RuntimeEnvironment.getApplication())
+        conn.info = FerruxInfo().apply {
+            apiVersion = 1
+            capabilities = arrayOf("pipes", "pty", "files")
+        }
+        assertEquals(false, conn.supports(FerruxConnection.CAPABILITY_ATTACH))
+        // No binder is attached: reaching the remote call would fail differently.
+        try {
+            conn.sessions()
+            fail("sessions() needs the attach capability")
+        } catch (_: FerruxException.Unsupported) {
+        }
+        try {
+            conn.attach(1, 24, 80)
+            fail("attach() needs the attach capability")
+        } catch (_: FerruxException.Unsupported) {
+        }
+    }
+}
