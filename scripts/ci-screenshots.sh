@@ -1021,10 +1021,23 @@ hide_ime
 
 # --- Settings ----------------------------------------------------------------
 
+# hide_keyboard: like hide_ime, but by the IME's own state, since the font-size and
+# extra-keys steps change the full row count that hide_ime compares against.
+hide_keyboard() {
+  local i
+  ime_shown || return 0
+  adb shell input keyevent KEYCODE_BACK # consumed by the IME while it is shown
+  for i in $(seq 1 20); do
+    ime_shown || return 0
+    sleep 0.5
+  done
+  fail "could not hide the soft keyboard"
+}
+
 # open_settings: drawer → Settings (the ☰ extra key, or an edge swipe when the
 # extra keys are hidden), then waits for the theme picker.
 open_settings() {
-  hide_ime
+  hide_keyboard
   if [ -n "$(node 'content-desc="Sessions"')" ]; then
     tap_node 'content-desc="Sessions"'
   else
@@ -1088,7 +1101,7 @@ close_settings
 run_line 'clear'
 type_line 'sh%scolors.sh'
 expect_screen '^truecolor ok$' "colour test ran"
-hide_ime
+hide_keyboard
 shot 27-terminal-solarized-light
 
 log "28: cursor style and blink"
@@ -1182,7 +1195,7 @@ clip_before="$(ui_field clipboard)"
 [ "$clip_before" != OSC52-OK ] || fail "clipboard already holds the OSC 52 text"
 type_line 'sh%sosc52.sh'
 expect_screen '^osc52 sent$' "the program sent OSC 52"
-hide_ime
+hide_keyboard
 sleep 2
 [ -z "$(node 'wants to copy')" ] || fail "asked although the policy is Deny"
 expect_ui clipboard "^$clip_before\$" "Deny left the clipboard alone"
@@ -1193,7 +1206,7 @@ close_settings
 run_line 'clear'
 type_line 'sh%sosc52.sh'
 expect_screen '^osc52 sent$' "the program sent OSC 52"
-hide_ime
+hide_keyboard
 expect_ui clipboard '^OSC52-OK$' "Allow copied without asking"
 [ -z "$(node 'wants to copy')" ] || fail "asked although the policy is Allow"
 
@@ -1205,7 +1218,7 @@ expect_ui settings ',bell:BEEP,' "Beep saved"
 close_settings
 type_line 'sh%sbell.sh'
 expect_screen '^bell rung$' "a program rang the bell (Beep)"
-hide_ime
+hide_keyboard
 check_crash
 open_settings
 settings_tap 'text="Silent"'
