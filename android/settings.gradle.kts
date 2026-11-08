@@ -26,3 +26,4 @@ rootProject.name = "ferrux"
 include(":app")
 include(":terminal-view")
 include(":api")
+include(":apiclient-sample")

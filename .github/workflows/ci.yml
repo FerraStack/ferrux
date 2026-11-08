@@ -78,9 +78,26 @@ jobs:
             "$readelf" -lW "$so" | awk '$1=="LOAD" { print; if ($NF != "0x4000" && $NF != "0x10000") bad=1 } END { exit bad }'
           done
       - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+      - name: Throwaway signing keys for the API test
+        # Two keys that exist only in this job (never uploaded): "known" is listed in
+        # Ferrux's knownCerts, "other" is not (docs/API.md §3.3, scripts/ci-api.sh).
+        run: |
+          keys="$RUNNER_TEMP/api-keys"
+          mkdir -p "$keys"
+          for k in known other; do
+            keytool -genkeypair -noprompt -keystore "$keys/$k.jks" -storepass "ci-$k-pass" -keypass "ci-$k-pass" \
+              -alias "$k" -keyalg RSA -keysize 2048 -validity 2 -dname "CN=Ferrux CI $k (throwaway)"
+          done
+          digest="$(keytool -exportcert -keystore "$keys/known.jks" -storepass ci-known-pass -alias known | sha256sum | cut -d' ' -f1)"
+          echo "KNOWN_SIGNER=$digest" >> "$GITHUB_ENV"
+          echo "known signer: $digest"
       - name: assembleDebug + unit tests
         working-directory: android
-        run: ./gradlew --max-workers=4 assembleDebug testDebugUnitTest :terminal-view:publishToMavenLocal :api:publishToMavenLocal -Pferrux.skipCargo=true
+        run: >-
+          ./gradlew --max-workers=4 assembleDebug testDebugUnitTest
+          :terminal-view:publishToMavenLocal :api:publishToMavenLocal
+          :apiclient-sample:assembleDebugAndroidTest
+          -Pferrux.skipCargo=true -Pferrux.api.knownSigners="$KNOWN_SIGNER"
       - name: Check APK contents
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
@@ -117,13 +134,39 @@ jobs:
           name: ferrux-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: API test APKs (sample client, re-signed copies)
+        run: |
+          bt="$ANDROID_SDK_ROOT/build-tools/36.0.0"
+          keys="$RUNNER_TEMP/api-keys"
+          out=api-apks
+          mkdir -p "$out"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$out/"
+          sample=android/apiclient-sample/build/outputs/apk/debug/apiclient-sample-debug.apk
+          tests=android/apiclient-sample/build/outputs/apk/androidTest/debug/apiclient-sample-debug-androidTest.apk
+          cp "$sample" "$out/sample.apk"
+          cp "$tests" "$out/sample-test.apk"
+          for k in known other; do
+            for pair in "sample:$sample" "sample-test:$tests"; do
+              "$bt/apksigner" sign --ks "$keys/$k.jks" --ks-pass "pass:ci-$k-pass" --ks-key-alias "$k" \
+                --v4-signing-enabled false --out "$out/${pair%%:*}-$k.apk" "${pair#*:}"
+            done
+          done
+          rm -rf "$keys"
+          for apk in "$out"/*.apk; do
+            echo "$apk: $("$bt/apksigner" verify --print-certs "$apk" | grep -m1 'SHA-256 digest')"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ferrux-api-apks
+          path: api-apks/
+          if-no-files-found: error
 
   screenshots:
     name: Emulator (API ${{ matrix.api }}, ${{ matrix.mode }})
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -147,6 +190,10 @@ jobs:
         with:
           name: ferrux-debug-apk
           path: apk
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ferrux-api-apks
+          path: api-apks
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -167,7 +214,10 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: scripts/ci-screenshots.sh apk/app-debug.apk ${{ matrix.mode }}
+          # The app checks, then the cross-app API test (docs/API.md §10).
+          script: |
+            scripts/ci-screenshots.sh apk/app-debug.apk ${{ matrix.mode }}
+            scripts/ci-api.sh api-apks
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
