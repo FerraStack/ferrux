@@ -6,7 +6,10 @@
 #
 #   ci-screenshots.sh <app-debug.apk> [full|smoke]
 #
-# smoke: launch + echo only (used for the API 30 job).
+# Both modes start from a fresh install: the first-run setup downloads and
+# installs the bootstrap, and the session must be $PREFIX/bin/bash.
+# full:  + pkg install python git, then the UI checks (API 35, screenshots posted).
+# smoke: bootstrap + bash + echo only (used for the API 30 job).
 set -euo pipefail
 
 APK="${1:?usage: ci-screenshots.sh <app-debug.apk> [full|smoke]}"
@@ -36,10 +39,11 @@ dump_screen() {
   adb exec-out run-as "$PKG" cat files/debug-screen.txt
 }
 
-# expect_screen <ERE> <what>: waits up to 30 s for the grid/header to match.
+# expect_screen <ERE> <what> [seconds]: waits (default 30 s) for the
+# grid/header to match.
 expect_screen() {
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "${3:-30}"); do
     if dump_screen > "$OUT/screen.txt" 2> /dev/null && grep -Eq -- "$1" "$OUT/screen.txt"; then
       log "ok: $2"
       return 0
@@ -49,6 +53,23 @@ expect_screen() {
   echo "--- last screen dump ---"
   cat "$OUT/screen.txt" || true
   fail "$2: /$1/ not found in terminal dump"
+}
+
+# titles: the sessions' names in drawer order, "|"-separated (they may contain spaces).
+titles() { dump_screen | head -n1 | sed 's/.* titles=//'; }
+
+# expect_titles <names> <what>: waits up to 10 s for the session names to be exactly <names>.
+expect_titles() {
+  local i t=""
+  for i in $(seq 1 20); do
+    t="$(titles)"
+    if [ "$t" = "$1" ]; then
+      log "ok: $2 ($t)"
+      return 0
+    fi
+    sleep 0.5
+  done
+  fail "$2: sessions are '$t', expected '$1'"
 }
 
 header_field() { dump_screen | head -n1 | tr ' ' '\n' | sed -n "s/^$1=//p"; }
@@ -183,6 +204,9 @@ full_rows() {
 # zoom <EQUALS|MINUS>: Ctrl+Alt+= / Ctrl+Alt+- from a hardware keyboard.
 zoom() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT "KEYCODE_$1"; }
 
+# ctrl_alt <KEY>: Ctrl+Alt+<KEY> from a hardware keyboard, e.g. ctrl_alt DPAD_UP.
+ctrl_alt() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT "KEYCODE_$1"; }
+
 # --- UI nodes ----------------------------------------------------------------
 
 ui_dump() {
@@ -194,12 +218,20 @@ ui_dump() {
 node() { ui_dump | tr '<' '\n' | grep -F -- "$1" | head -n1 || true; }
 
 wait_node() {
-  local i n
+  local i n ui
   for i in $(seq 1 20); do
-    n="$(node "$1")"
+    ui="$(ui_dump | tr '<' '\n')"
+    n="$(printf '%s' "$ui" | grep -F -- "$1" | head -n1 || true)"
     if [ -n "$n" ]; then
       printf '%s' "$n"
       return 0
+    fi
+    # Emulator flake: an ANR dialog of another app (e.g. "Pixel Launcher
+    # isn't responding") covers the screen. Choose Wait and look again.
+    if grep "isn't responding" <<< "$ui" > /dev/null; then
+      echo "== dismissing ANR dialog: $(grep -o "text=\"[^\"]*isn't responding\"" <<< "$ui" | head -n1)" >&2
+      n="$(grep -F 'text="Wait"' <<< "$ui" | head -n1 || true)"
+      if [ -n "$n" ]; then tap_bounds "$n"; fi
     fi
     sleep 1
   done
@@ -405,6 +437,8 @@ wait_ime_ready() {
   done
   if ! ime_ready; then
     adb shell dumpsys input_method | grep -E 'mInputShown|mServedView|mCurFocusedWindow' | head -n5 || true
+    # A system dialog over the app takes the focus the keyboard needs.
+    adb shell dumpsys window | grep -E 'mCurrentFocus=' || true
     fail "the soft keyboard never became ready"
   fi
   wait_ime_settled
@@ -528,6 +562,11 @@ adb wait-for-device
 adb shell settings put global window_animation_scale 0
 adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
+# No "<app> isn't responding" / crash dialogs from other apps: on a cold emulator
+# the launcher sometimes stalls, and its dialog takes window focus from the app
+# under test (the soft keyboard then never connects). Our own crashes are still
+# caught from logcat by check_crash.
+adb shell settings put global hide_error_dialogs 1
 adb shell wm size | tee "$OUT/display.txt"
 
 adb install -r -g "$APK"
@@ -536,13 +575,69 @@ adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS 2> /dev/null || 
 adb logcat -c
 adb shell am start -W -n "$ACTIVITY"
 
-log "01: fresh launch lands in a shell"
-expect_screen '^sessions=1 ' "one session auto-created"
-expect_screen '^~ \$' "shell prompt visible"
+log "00a: a fresh install opens the first-run setup"
+expect_screen '^sessions=0 .*setup=idle' "setup screen waiting for the user, no session yet"
+wait_node 'text="Download and install"' > /dev/null
+shot 00a-setup
+
+log "00b: bootstrap download + install"
+tap_node 'text="Download and install"'
+# The progress UI animates, so uiautomator cannot dump it; the app's own
+# state (DebugReceiver header) tells when a screenshot shows progress. One
+# device-side command reads the state, takes the screenshot and reads the
+# state again (setup takes only seconds): both in progress means the
+# screenshot shows the progress screen.
+dump_cmd="am broadcast -n $RECEIVER -a dev.ferrux.debug.DUMP_SCREEN > /dev/null; run-as $PKG head -n1 files/debug-screen.txt"
+setup_of() { tr ' ' '\n' <<< "$1" | sed -n 's/^setup=//p'; }
+progress_re='^(downloading|verifying|extracting|finishing)$'
+captured=
+seen=
+for i in $(seq 1 600); do
+  out="$(adb shell "$dump_cmd; screencap -p /data/local/tmp/progress.png; $dump_cmd" | tr -d '\r')"
+  before="$(setup_of "$(sed -n 1p <<< "$out")")"
+  after="$(setup_of "$(sed -n 2p <<< "$out")")"
+  [ "$before" = "${seen##* }" ] || seen="$seen $before"
+  case "$after" in
+    failed)
+      dump_screen
+      # The app already retries server errors; if GitHub is still failing,
+      # do what a user would: tap Try again (twice at most).
+      retries=$((${retries:-0} + 1))
+      [ "$retries" -le 2 ] || fail "bootstrap installation failed"
+      echo "::warning::bootstrap setup failed; tapping Try again ($retries/2)"
+      tap_node 'text="Try again"'
+      continue
+      ;;
+  esac
+  if [ -z "$captured" ] && grep -E "$progress_re" <<< "$before" > /dev/null && grep -E "$progress_re" <<< "$after" > /dev/null; then
+    adb exec-out cat /data/local/tmp/progress.png > "$OUT/00b-bootstrap-progress.png"
+    captured=1
+    log "screenshot 00b-bootstrap-progress (setup=$before -> $after)"
+  fi
+  [ "$after" = installed ] && break
+done
+log "setup states seen:$seen"
+if [ -z "$captured" ]; then
+  # The smoke job publishes no screenshots; only the full job must show it.
+  [ "$MODE" = smoke ] || fail "never caught the setup progress screen (states seen:$seen)"
+  log "setup finished before a progress screenshot could be taken"
+fi
+expect_screen '^sessions=1 .*bootstrap=installed setup=installed' "bootstrap installed, session started" 180
+
+log "01: the session is a login bash from \$PREFIX"
+expect_screen '^~ \$' "bash prompt visible"
 ROWS_FULL="$(stable_rows)" # right after launch the insets may still be settling
 log "grid at launch: ${ROWS_FULL} rows x $(header_field cols) cols"
 [ "$ROWS_FULL" -ge 30 ] || fail "terminal only has $ROWS_FULL rows on a full screen"
-shot 01-launch
+type_line 'echo%s$PREFIX'
+expect_screen '^/data/data/dev\.ferrux/files/usr$' "echo \$PREFIX"
+# $0 of the session shell with the prefix stripped: it is $PREFIX/bin/bash.
+type_line 'echo%sshell=${0#$PREFIX}'
+expect_screen '^shell=/bin/bash$' "session shell is \$PREFIX/bin/bash"
+type_line 'bash%s--version'
+expect_screen '^GNU bash, version [0-9]' "bash --version"
+hide_ime
+shot 01-bash
 
 log "02: echo"
 # Real soft-keyboard typing (most other steps type through the debug hook).
@@ -556,6 +651,36 @@ if [ "$MODE" = smoke ]; then
   log "smoke test passed"
   exit 0
 fi
+
+log "02a: pkg install from the Ferrux repository"
+# CI only: GitHub's release downloads occasionally answer 504. Retry harder,
+# and make `apt update` fail on a failed fetch so the marker below is honest.
+printf 'Acquire::Retries "8";\nAPT::Update::Error-Mode "any";\n' |
+  adb shell "run-as $PKG sh -c 'cat > files/usr/etc/apt/apt.conf.d/99-ci'"
+# Markers are computed by the shell, so they cannot match the typed command
+# line, and they only print if the command succeeded.
+type_line 'pkg%supdate%s&&%secho%sUPDATED-$((1+1))'
+expect_screen '^UPDATED-2$' "pkg update" 300
+type_line 'pkg%sinstall%s-y%spython%sgit%s&&%secho%sPKG-$((40+2))'
+if ! (expect_screen '^PKG-42$' "pkg install -y python git" 900); then
+  shot 02a-pkg-install-failed
+  # The grid only holds the tail; apt keeps the whole dpkg transcript.
+  echo "--- \$PREFIX/var/log/apt/term.log (tail) ---"
+  adb exec-out run-as "$PKG" tail -n 120 files/usr/var/log/apt/term.log || true
+  fail "pkg install -y python git failed"
+fi
+hide_ime
+shot 02a-pkg-install
+check_crash
+
+log "02a: python and git run"
+type_line "python%s-c%s'print(6*7)'"
+expect_screen '^42$' "python -c 'print(6*7)' printed 42"
+type_line 'git%s--version'
+expect_screen '^git version [0-9]' "git --version"
+hide_ime
+shot 02a-python
+check_crash
 
 log "02b: clear empties the screen, also after the keyboard closes (#30)"
 # `clear` (toybox) writes ESC[2J ESC[H. With the keyboard up the grid is short;
@@ -1014,6 +1139,111 @@ wait_for "keep screen on sets the window flag" screen_kept_on
 adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.KEEP_SCREEN_ON --ez on false > /dev/null
 wait_for "turning it off clears the flag" not screen_kept_on
 
+log "25: screen reader: rows are text nodes, new output is announced politely"
+# `uiautomator events` is an accessibility client, like TalkBack: while it runs,
+# the terminal tracks its screen and announces new output, and we capture the
+# events. Only one UiAutomation client can run at a time, so the node tree is
+# dumped after it stops; the output node keeps its last announcement.
+adb shell uiautomator events > "$OUT/a11y-events.txt" 2>&1 &
+events_pid=$!
+sleep 2
+run_line 'true' # a first change sets the baseline that new output is measured from
+sleep 1
+type_line 'echo%sspeak%sthis%snow'
+expect_screen '^speak this now$' "output in the grid"
+sleep 2 # announcements wait for the screen to be quiet for a moment
+kill "$events_pid" 2> /dev/null || true
+wait "$events_pid" 2> /dev/null || true
+grep 'CONTENT_CHANGE_TYPE_TEXT' "$OUT/a11y-events.txt" | grep 'speak this now' > /dev/null ||
+  { echo "$(grep -c . "$OUT/a11y-events.txt" || true) event lines captured"; fail "no text-change event carried the new output"; }
+log "ok: a text-change event announced the new output"
+hide_ime
+row="$(wait_node 'text="speak this now"')"
+printf '%s' "$row" | grep 'class="android.widget.TextView"' > /dev/null || fail "the output row is not a text node: $row"
+log "ok: the output row is its own text node"
+out="$(wait_node 'resource-id="terminal-output"')"
+printf '%s' "$out" | grep 'speak this now' > /dev/null || fail "the live output node lacks the new output: $out"
+printf '%s' "$out" | grep -F 'echo speak' > /dev/null && fail "the typed command was announced again: $out"
+log "ok: the live output node holds the new output, not the typed command"
+shot 25-screen-reader
+
+log "26: hardware-keyboard session shortcuts: Ctrl+Alt+C, Ctrl+Alt+up/down, Ctrl+Alt+1...9"
+hide_ime
+expect_screen '^sessions=1 ' "one session to start with"
+s1="$(header_field current)"
+ctrl_alt C
+expect_screen '^sessions=2 ' "Ctrl+Alt+C opened a session"
+expect_field current "v != $s1" "the new session is shown"
+s2="$(header_field current)"
+expect_screen '^~ \$' "its prompt"
+ctrl_alt C
+expect_screen '^sessions=3 ' "Ctrl+Alt+C opened another"
+expect_field current "v != $s2" "and showed it"
+s3="$(header_field current)"
+ctrl_alt DPAD_UP
+expect_field current "v == $s2" "Ctrl+Alt+Up: previous session"
+ctrl_alt DPAD_DOWN
+expect_field current "v == $s3" "Ctrl+Alt+Down: next session"
+ctrl_alt DPAD_DOWN
+expect_field current "v == $s1" "Ctrl+Alt+Down on the last session wraps to the first"
+ctrl_alt 2
+expect_field current "v == $s2" "Ctrl+Alt+2: the second session"
+expect_screen '^sessions=3 ' "no keys leaked into a new session"
+tap_node 'content-desc="Sessions"'
+wait_node 'text="Session 3"' > /dev/null
+sleep 1
+# keycombination can leave the soft keyboard up. Hide it before the shot, and
+# do not use Back to close the drawer: Back is consumed by the IME, so the
+# drawer stays open and the Sessions key is not in the tree.
+hide_ime
+shot 26-session-shortcuts
+if [ -n "$(node 'content-desc="Close navigation menu"')" ]; then
+  tap_node 'content-desc="Close navigation menu"'
+fi
+
+log "27: rename and reorder sessions from the drawer"
+hide_ime
+tap_node 'content-desc="Sessions"'
+tap_node 'text="New session"'
+for i in $(seq 1 20); do
+  before="$(titles)"
+  case "$before" in *'|'*) break ;; esac
+  sleep 0.5
+done
+case "$before" in *'|'*) ;; *) fail "expected at least two sessions, got '$before'" ;; esac
+last="${before##*|}"          # the new session, at the end
+rest="${before%|"$last"}"     # the ones before it
+prev="${rest##*|}"            # the one just before it
+log "sessions before: $before"
+tap_node 'content-desc="Sessions"'
+tap_node "content-desc=\"Options for $last\""
+tap_text 'Rename'
+wait_node 'class="android.widget.EditText"' > /dev/null
+# The field starts with the old name selected, so typing replaces it.
+for attempt in 1 2; do
+  adb shell input text build
+  sleep 1
+  node 'class="android.widget.EditText"' | grep 'text="build"' > /dev/null && break
+  echo "::warning::rename field shows '$(node 'class="android.widget.EditText"' | grep -oE ' text="[^"]*"')'; retyping"
+  adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_A
+  adb shell input keyevent KEYCODE_DEL
+done
+node 'class="android.widget.EditText"' | grep 'text="build"' > /dev/null || fail "could not type the new name"
+tap_text 'Rename'
+expect_titles "$rest|build" "the session is renamed in place"
+tap_node 'content-desc="Options for build"'
+tap_text 'Move up'
+expected="${rest%"$prev"}build|$prev"
+expect_titles "$expected" "Move up put it one place higher"
+sleep 1
+shot 27-rename-reorder
+# The rename field can leave the soft keyboard up. Back would dismiss the
+# IME and leave the drawer open, so tap the scrim instead.
+hide_ime
+if [ -n "$(node 'content-desc="Close navigation menu"')" ]; then
+  tap_node 'content-desc="Close navigation menu"'
+fi
+
 # Back to the home directory, so run_line sees the usual "~ $" prompt.
 type_line 'cd'
 expect_screen '^~ \$' "back in ~"
@@ -1076,13 +1306,13 @@ settings_tap() {
   fail "no settings item matching $1 (see ui-missing.xml)"
 }
 
-log "25: Settings screen"
+log "28: Settings screen"
 open_settings
 expect_ui settings '^theme:ferrux-night,' "default theme"
 sleep 1
 shot 25-settings
 
-log "26: each colour theme recolours the terminal"
+log "29: each colour theme recolours the terminal"
 for theme in "gruvbox-dark:Gruvbox Dark:#282828" "nord:Nord:#2E3440" "dracula:Dracula:#282A36" \
   "solarized-dark:Solarized Dark:#002B36" "solarized-light:Solarized Light:#FDF6E3" \
   "ferrux-night:Ferrux Night:#0E1116"; do
@@ -1094,7 +1324,7 @@ for theme in "gruvbox-dark:Gruvbox Dark:#282828" "nord:Nord:#2E3440" "dracula:Dr
   shot "26-settings-$id"
 done
 
-log "27: a light theme in the terminal"
+log "30: a light theme in the terminal"
 tap_node 'content-desc="Solarized Light theme"'
 expect_ui defaultBg '^#FDF6E3$' "Solarized Light applied"
 close_settings
@@ -1104,7 +1334,7 @@ expect_screen '^truecolor ok$' "colour test ran"
 hide_keyboard
 shot 27-terminal-solarized-light
 
-log "28: cursor style and blink"
+log "31: cursor style and blink"
 open_settings
 tap_node 'content-desc="Nord theme"'
 settings_tap 'text="Underline"'
@@ -1125,7 +1355,7 @@ expect_ui settings ',blink:true,' "blink saved"
 close_settings
 expect_ui cursorBlink '^1$' "the cursor blinks"
 
-log "29: font size"
+log "32: font size"
 cols_before="$(ui_field cols)"
 open_settings
 for i in 1 2 3; do settings_tap 'content-desc="Larger text"'; done
@@ -1144,7 +1374,7 @@ expect_ui settings ',fontSize:13.0,' "back to 13 sp"
 close_settings
 expect_ui cols "^$cols_before\$" "columns restored"
 
-log "30: extra-keys presets"
+log "33: extra-keys presets"
 open_settings
 settings_tap 'text="One row"'
 expect_ui settings ',extraKeys:ONE_ROW,' "One row saved"
@@ -1167,7 +1397,7 @@ close_settings
 wait_node 'resource-id="key-PGUP"' > /dev/null
 expect_screen "rows=$ROWS_FULL " "full grid again"
 
-log "31: keep screen on"
+log "34: keep screen on"
 screen_kept_on && fail "FLAG_KEEP_SCREEN_ON set before enabling it"
 open_settings
 settings_tap 'Keep screen on'
@@ -1186,7 +1416,7 @@ settings_tap 'Close sessions that exit cleanly'
 expect_ui settings ',closeOnCleanExit:true,' "and on again"
 close_settings
 
-log "32: OSC 52 policy: Deny and Allow"
+log "35: OSC 52 policy: Deny and Allow"
 open_settings
 settings_tap 'text="Deny"'
 expect_ui settings ',clipboard:OFF$' "Deny saved"
@@ -1210,7 +1440,7 @@ hide_keyboard
 expect_ui clipboard '^OSC52-OK$' "Allow copied without asking"
 [ -z "$(node 'wants to copy')" ] || fail "asked although the policy is Allow"
 
-log "33: bell modes"
+log "36: bell modes"
 adb shell "run-as $PKG sh -c 'cat > files/home/bell.sh'" < "$HERE/ci-bell.sh"
 open_settings
 settings_tap 'text="Beep"'
@@ -1227,7 +1457,7 @@ sleep 1
 shot 33-settings-behaviour
 close_settings
 
-log "34: settings survive a restart and apply to new sessions"
+log "37: settings survive a restart and apply to new sessions"
 adb shell am force-stop "$PKG"
 adb shell am start -W -n "$ACTIVITY" > /dev/null
 expect_screen '^sessions=1 ' "fresh session after the restart"

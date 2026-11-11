@@ -12,25 +12,39 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import kotlin.math.abs
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -54,26 +68,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.text
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -86,10 +87,23 @@ import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
 import dev.ferrux.app.SessionInfo
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import dev.ferrux.app.SessionManager
+import dev.ferrux.app.SessionShortcut
+import dev.ferrux.app.SessionShortcuts
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
-import kotlin.math.abs
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -117,6 +131,29 @@ fun FerruxScreen(
 private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, onExit: () -> Unit) {
     val sessions by manager.sessions.collectAsStateWithLifecycle()
     val currentId by manager.current.collectAsStateWithLifecycle()
+
+    // Hardware-keyboard session shortcuts (Ctrl+Alt+C, ↑/↓, 1…9; see SessionShortcuts).
+    val currentOnNewSession by rememberUpdatedState(onNewSession)
+    val onShortcut: (Int) -> Boolean = remember(manager) {
+        { keyCode ->
+            when (val shortcut = SessionShortcuts.of(keyCode)) {
+                null -> false
+                SessionShortcut.New -> {
+                    currentOnNewSession()
+                    true
+                }
+                is SessionShortcut.Move -> {
+                    val ids = manager.sessions.value.map { it.id }
+                    SessionShortcuts.neighbour(ids, manager.current.value, shortcut.delta)?.let(manager::select)
+                    true
+                }
+                is SessionShortcut.Go -> {
+                    manager.sessions.value.getOrNull(shortcut.index)?.let { manager.select(it.id) }
+                    true
+                }
+            }
+        }
+    }
     val current = sessions.firstOrNull { it.id == currentId }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -235,113 +272,116 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     }
 
     Box(Modifier.fillMaxSize()) {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            // Dragging is only enabled to close; opening uses the edge strip below
-            // so horizontal drags never fight with the terminal.
-            gesturesEnabled = drawerState.isOpen,
-            drawerContent = {
-                SessionDrawer(
-                    sessions = sessions,
-                    currentId = currentId,
-                    onSelect = {
-                        manager.select(it)
-                        scope.launch { drawerState.close() }
-                    },
-                    onKill = manager::kill,
-                    onNew = {
-                        onNewSession()
-                        scope.launch { drawerState.close() }
-                    },
-                    onSettings = {
-                        openSettings()
-                        scope.launch { drawerState.close() }
-                    },
-                )
-            },
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        // Dragging is only enabled to close; opening uses the edge strip below
+        // so horizontal drags never fight with the terminal.
+        gesturesEnabled = drawerState.isOpen,
+        drawerContent = {
+            SessionDrawer(
+                sessions = sessions,
+                currentId = currentId,
+                onSelect = {
+                    manager.select(it)
+                    scope.launch { drawerState.close() }
+                },
+                onKill = manager::kill,
+                onRename = manager::rename,
+                onMove = manager::move,
+                onNew = {
+                    onNewSession()
+                    scope.launch { drawerState.close() }
+                },
+                onSettings = {
+                    openSettings()
+                    scope.launch { drawerState.close() }
+                },
+            )
+        },
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(TerminalColors.Background)
+                // Status bar, navigation bar, display cutout and the IME: the
+                // terminal shrinks above the keyboard and the grid is resized.
+                .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
-            Column(
+            val closeExited by rememberUpdatedState(
+                current?.takeIf { it.exitCode != null }?.let { exited -> { manager.kill(exited.id) } },
+            )
+            Box(
                 Modifier
-                    .fillMaxSize()
-                    .background(TerminalColors.Background)
-                    // Status bar, navigation bar, display cutout and the IME: the
-                    // terminal shrinks above the keyboard and the grid is resized.
-                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .swipeToClose { closeExited?.invoke() },
             ) {
-                val closeExited by rememberUpdatedState(
-                    current?.takeIf { it.exitCode != null }?.let { exited -> { manager.kill(exited.id) } },
-                )
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .swipeToClose { closeExited?.invoke() },
-                ) {
-                    if (current != null) {
-                        AndroidView(
-                            factory = { context ->
-                                TerminalView(context).also { view ->
-                                    view.stickyModifiers = sticky
-                                    view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
-                                    // The saved zoom, applied before the first layout so the pty
-                                    // is sized once.
-                                    settings.fontSizeSp.value?.let { view.textSizeSp = it }
-                                    view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
-                                    terminalView = view
-                                    ActiveTerminal.view = java.lang.ref.WeakReference(view)
+                if (current != null) {
+                    AndroidView(
+                        factory = { context ->
+                            TerminalView(context).also { view ->
+                                view.stickyModifiers = sticky
+                                view.setPadding(4.dp.px(context), 2.dp.px(context), 4.dp.px(context), 0)
+                                // The saved zoom, applied before the first layout so the pty
+                                // is sized once.
+                                settings.fontSizeSp.value?.let { view.textSizeSp = it }
+                                view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
+                                view.onShortcut = { event -> onShortcut(event.keyCode) }
+                                terminalView = view
+                                ActiveTerminal.view = java.lang.ref.WeakReference(view)
+                            }
+                        },
+                        update = { view ->
+                            // A running session talks to its process; an exited one turns
+                            // Enter / Esc into restart / close (see ExitedSessionBackend).
+                            val exited = current.exitCode != null
+                            val shown = when (val b = view.backend) {
+                                is ExitedSessionBackend -> exited && b.sessionId == current.id
+                                is NativeSessionBackend -> !exited && b.sessionId == current.id
+                                else -> false
+                            }
+                            if (!shown) {
+                                val id = current.id
+                                view.backend = if (exited) {
+                                    ExitedSessionBackend(
+                                        id,
+                                        onRestart = { manager.restart(id) },
+                                        onClose = { manager.kill(id) },
+                                    )
+                                } else {
+                                    NativeSessionBackend(id)
                                 }
-                            },
-                            update = { view ->
-                                // A running session talks to its process; an exited one turns
-                                // Enter / Esc into restart / close (see ExitedSessionBackend).
-                                val exited = current.exitCode != null
-                                val shown = when (val b = view.backend) {
-                                    is ExitedSessionBackend -> exited && b.sessionId == current.id
-                                    is NativeSessionBackend -> !exited && b.sessionId == current.id
-                                    else -> false
-                                }
-                                if (!shown) {
-                                    val id = current.id
-                                    view.backend = if (exited) {
-                                        ExitedSessionBackend(
-                                            id,
-                                            onRestart = { manager.restart(id) },
-                                            onClose = { manager.kill(id) },
-                                        )
-                                    } else {
-                                        NativeSessionBackend(id)
-                                    }
-                                    view.requestFocus()
-                                }
-                            },
-                            onRelease = { if (terminalView === it) terminalView = null },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                    EdgeSwipeStrip(
-                        onOpen = { scope.launch { drawerState.open() } },
-                        modifier = Modifier.align(Alignment.CenterStart),
+                                view.requestFocus()
+                            }
+                        },
+                        onRelease = { if (terminalView === it) terminalView = null },
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-                // Transient prompts (the OSC 52 question) get their own space below the
-                // terminal, which shrinks while one is shown, so the prompt line the user
-                // is typing on stays visible.
-                SnackbarHost(snackbars, modifier = Modifier.fillMaxWidth()) { data ->
-                    FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                }
-                ExtraKeysRow(
-                    layout = ExtraKeysLayout.of(extraKeys),
-                    sticky = sticky,
-                    onKey = { code -> terminalView?.sendKey(code) },
-                    onText = { text -> terminalView?.sendText(text) },
-                    onAction = { action ->
-                        when (action) {
-                            ExtraKeyAction.Drawer -> scope.launch { drawerState.open() }
-                        }
-                    },
+                EdgeSwipeStrip(
+                    onOpen = { scope.launch { drawerState.open() } },
+                    modifier = Modifier.align(Alignment.CenterStart),
                 )
             }
+            // Transient prompts (the OSC 52 question) get their own space below the
+            // terminal, which shrinks while one is shown, so the prompt line the user
+            // is typing on stays visible.
+            SnackbarHost(snackbars, modifier = Modifier.fillMaxWidth()) { data ->
+                FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+            }
+            ExtraKeysRow(
+                layout = ExtraKeysLayout.of(extraKeys),
+                sticky = sticky,
+                onKey = { code -> terminalView?.sendKey(code) },
+                onText = { text -> terminalView?.sendText(text) },
+                onAction = { action ->
+                    when (action) {
+                        ExtraKeyAction.Drawer -> scope.launch { drawerState.open() }
+                    }
+                },
+            )
         }
+    }
         AnimatedVisibility(
             visible = settingsOpen,
             enter = fadeIn() + slideInHorizontally { it / 6 },
@@ -472,9 +512,22 @@ private fun SessionDrawer(
     currentId: Long,
     onSelect: (Long) -> Unit,
     onKill: (Long) -> Unit,
+    onRename: (Long, String) -> Unit,
+    onMove: (Long, Int) -> Unit,
     onNew: () -> Unit,
     onSettings: () -> Unit,
 ) {
+    var renaming by remember { mutableStateOf<SessionInfo?>(null) }
+    renaming?.let { session ->
+        RenameDialog(
+            session = session,
+            onRename = { name ->
+                onRename(session.id, name)
+                renaming = null
+            },
+            onDismiss = { renaming = null },
+        )
+    }
     ModalDrawerSheet(Modifier.semantics { contentDescription = "Session drawer" }) {
         Text(
             stringResource(R.string.sessions),
@@ -484,12 +537,12 @@ private fun SessionDrawer(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f, fill = false)) {
-            items(sessions, key = { it.id }) { session ->
+            itemsIndexed(sessions, key = { _, session -> session.id }) { index, session ->
                 val exitCode = session.exitCode
                 NavigationDrawerItem(
                     label = {
                         Text(
-                            session.title,
+                            session.label,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             color = if (exitCode != null) TerminalColors.Muted else Color.Unspecified,
@@ -500,6 +553,13 @@ private fun SessionDrawer(
                     badge = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (exitCode != null) ExitBadge(exitCode)
+                            SessionMenu(
+                                session = session,
+                                canMoveUp = index > 0,
+                                canMoveDown = index < sessions.size - 1,
+                                onRename = { renaming = session },
+                                onMove = { delta -> onMove(session.id, delta) },
+                            )
                             IconButton(onClick = { onKill(session.id) }) {
                                 Icon(painterResource(R.drawable.ic_close), stringResource(R.string.kill_session))
                             }
@@ -526,6 +586,87 @@ private fun SessionDrawer(
         )
         Spacer(Modifier.height(12.dp))
     }
+}
+
+/** The ⋮ menu of a session in the drawer: rename, move up, move down. */
+@Composable
+private fun SessionMenu(
+    session: SessionInfo,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onRename: () -> Unit,
+    onMove: (Int) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(painterResource(R.drawable.ic_more_vert), stringResource(R.string.session_options, session.label))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.rename_session)) },
+                onClick = {
+                    open = false
+                    onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.move_session_up)) },
+                enabled = canMoveUp,
+                onClick = {
+                    open = false
+                    onMove(-1)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.move_session_down)) },
+                enabled = canMoveDown,
+                onClick = {
+                    open = false
+                    onMove(+1)
+                },
+            )
+        }
+    }
+}
+
+/** Names a session. The field starts with its current name, selected, ready to type over. */
+@Composable
+private fun RenameDialog(session: SessionInfo, onRename: (String) -> Unit, onDismiss: () -> Unit) {
+    var field by remember(session.id) {
+        mutableStateOf(TextFieldValue(session.label, selection = TextRange(0, session.label.length)))
+    }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.rename_session_title)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { field = it },
+                    label = { Text(stringResource(R.string.rename_session_name)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onRename(field.text) }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.rename_session_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TerminalColors.Muted,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onRename(field.text) }) { Text(stringResource(R.string.rename_session_confirm)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+        },
+    )
 }
 
 /**

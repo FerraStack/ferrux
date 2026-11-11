@@ -6,9 +6,11 @@ It is part of [FerraStack](https://github.com/FerraStack). Ferride, the FerraSta
 code editor, reuses Ferrux's terminal crates and will talk to Ferrux over a Binder
 service.
 
-> **Status: early development (milestones M1 + part of M2).** The app runs Android's
-> `/system/bin/sh` in real pseudo-terminals with IME and extra-keys input. There is
-> no package manager yet: the bootstrap and `pkg`/`apt` arrive in M3. See
+> **Status: early development (milestones M1–M2, M3 in progress).** On first run
+> the app downloads a bootstrap (bash, apt, coreutils) into
+> `/data/data/dev.ferrux/files/usr`; sessions run `bash` through the system linker,
+> and `pkg install` works against the Ferrux repository. See
+> [docs/PACKAGES.md](docs/PACKAGES.md) for packages and
 > [docs/RESEARCH.md](docs/RESEARCH.md) for the design and roadmap.
 
 ## Architecture
@@ -36,7 +38,7 @@ service.
 │ crates/ferrux-pty      openpt + fork/exec (async-signal-safe child), resize,  │
 │                        exec modes Direct | Linker (/system/bin/linker64)      │
 │ crates/ferrux-env      package/prefix constants, layout, session env,         │
-│                        bootstrap installer (stub until M3)                    │
+│                        bootstrap installer (verify, extract, atomic rename)   │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -51,7 +53,9 @@ are tested on Linux. Other apps (Ferride, API clients) reuse the terminal throug
 The app opens straight into a shell, with the terminal edge to edge. The extra-keys
 row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
 key; a double tap locks it. The arrow and page keys repeat while held. To open the
-session drawer, swipe from the left edge or tap ☰. With TalkBack or Switch Access,
+session drawer, swipe from the left edge or tap ☰. In the drawer, a session's ⋮ menu
+renames it or moves it up or down; a name you give it stays, whatever title the program
+sets (leave it empty to go back to the program's title). With TalkBack or Switch Access,
 CTRL and ALT are switches that announce their state (off, on for the next key, or
 locked), keys have spoken names ("Escape", "Up arrow", "Slash"), and every key can be
 activated.
@@ -99,8 +103,14 @@ on. To allow or deny these writes without asking, change the setting in Settings
 over 1 MiB are ignored.
 
 Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font size
-is saved. Switching to another app and back keeps the terminal as it was, including the
+is saved. Also on a hardware keyboard, as in Termux: Ctrl+Alt+C opens a new session,
+Ctrl+Alt+↑ / ↓ (or P / N) switch to the previous / next one, and Ctrl+Alt+1…9 jump to
+a session. Switching to another app and back keeps the terminal as it was, including the
 soft keyboard.
+
+With TalkBack, the terminal reads like a page of text: explore by touch or swipe to hear
+it line by line, and read a line by character or word. New output is announced
+politely once the screen is quiet (the latest lines, not what you typed).
 
 When a shell exits with an error, its session stays open with its last output and a
 notice: press Enter to start a new shell in the same directory, or swipe across the
@@ -228,7 +238,10 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     a process restart (saved zoom); exited sessions (notice, drawer badge,
     restart in the same directory, swipe to close, clean exit closes); the
     notification (session count, tap to open, Exit closes everything, wake lock);
-    and keep screen on.
+    keep screen on; the screen reader (rows as text nodes, announced output); the
+    Ctrl+Alt session shortcuts; renaming and reordering sessions; and the
+    Settings screen (theme, font size, cursor, extra keys, bell, keep screen
+    on, OSC 52).
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only
@@ -246,7 +259,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
 
 See [docs/RESEARCH.md §12](docs/RESEARCH.md#12-mvp-milestones). Next up:
 
-- **M3:** bootstrap and packages via linker64 + termux-exec.
+- **M3:** bootstrap and packages via linker64 + termux-exec
+  ([docs/PACKAGES.md](docs/PACKAGES.md); packages are built in
+  [FerraStack/ferrux-packages](https://github.com/FerraStack/ferrux-packages)).
 - **M4:** selection, copy/paste, URLs, settings.
 - **M5:** the Ferride API, designed in [docs/API.md](docs/API.md).
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <defs>
+    <radialGradient id="bg" gradientUnits="userSpaceOnUse" cx="54" cy="50" r="64">
+      <stop offset="0" stop-color="#171029"/>
+      <stop offset="1" stop-color="#0B0814"/>
+    </radialGradient>
+  </defs>
+  <path d="M0,0 H108 V108 H0 Z" fill="url(#bg)"/>
+</svg>

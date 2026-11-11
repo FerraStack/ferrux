@@ -8,6 +8,8 @@ import android.content.Intent
 import android.util.Base64
 import android.util.Log
 import dev.ferrux.app.FerruxSettings
+import dev.ferrux.app.BootstrapState
+import dev.ferrux.app.FerruxApplication
 import dev.ferrux.app.SessionManager
 import dev.ferrux.app.ui.ActiveTerminal
 import dev.ferrux.app.FerruxAppNative
@@ -32,8 +34,11 @@ import java.util.Locale
  * the clipboard text and the settings ([FerruxSettings.debugState]). Newlines in values
  * are written as `\n`.
  *
- * In the header, `view` is the identity of the on-screen TerminalView (0 if none)
- * and `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
+ * In the header, `view` identifies the on-screen TerminalView (0 if none) and
+ * `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
+ * `view` mixes in the process id: ART's identity hash is 28 bits seeded from
+ * the clock, and a fresh process can otherwise reuse the same hash.
+ * `titles=` is the last field (custom names are [dev.ferrux.app.SessionInfo.label]).
  */
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -82,13 +87,23 @@ class DebugReceiver : BroadcastReceiver() {
             append("sessions=${sessions.size} current=$current rows=$rows cols=$cols offset=$offset")
             // Runs on the main thread, so the view can be read directly.
             val view = ActiveTerminal.view?.get()
-            append(" view=").append(view?.let { System.identityHashCode(it) } ?: 0)
+            val viewToken = view?.let { v ->
+                val hash = System.identityHashCode(v).toLong() and 0x0fff_ffffL
+                val pid = android.os.Process.myPid().toLong() and 0xff_ffffL
+                hash or (pid shl 28)
+            } ?: 0L
+            append(" view=").append(viewToken)
             append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
             // Exit code per session, "-" while running.
             append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
-            append(" titles=").append(sessions.joinToString("|") { it.title })
+            val bootstrapped = FerruxAppNative.loadError == null && FerruxAppNative.isBootstrapped()
+            append(" bootstrap=").append(if (bootstrapped) "installed" else "missing")
+            val setup = (context.applicationContext as? FerruxApplication)?.bootstrap?.state?.value
+            append(" setup=").append(setupName(setup))
+            append(" titles=").append(sessions.joinToString("|") { it.label })
             append("\n---\n")
-            append(text)
+            // Without a session, show why setup failed (if it did).
+            append(if (current == 0L && setup is BootstrapState.Failed) setup.message else text)
             append('\n')
         }
         File(context.filesDir, "debug-screen.txt").writeText(dump)
@@ -106,6 +121,17 @@ class DebugReceiver : BroadcastReceiver() {
         }
         File(context.filesDir, "debug-ui.txt").writeText(ui)
         ui.lineSequence().forEach { Log.i(TAG, "ui: $it") }
+    }
+
+    private fun setupName(state: BootstrapState?): String = when (state) {
+        null -> "none"
+        BootstrapState.Idle -> "idle"
+        is BootstrapState.Downloading -> "downloading"
+        is BootstrapState.Verifying -> "verifying"
+        is BootstrapState.Extracting -> "extracting"
+        BootstrapState.Finishing -> "finishing"
+        BootstrapState.Installed -> "installed"
+        is BootstrapState.Failed -> "failed"
     }
 
     private companion object {

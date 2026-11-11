@@ -5,6 +5,10 @@ import android.app.Application
 import android.util.Log
 
 class FerruxApplication : Application() {
+    /** First-run bootstrap installer; null when libferrux.so is missing. */
+    var bootstrap: BootstrapInstaller? = null
+        private set
+
     override fun onCreate() {
         super.onCreate()
         val loadError = FerruxAppNative.loadError
@@ -13,8 +17,7 @@ class FerruxApplication : Application() {
             return
         }
         FerruxAppNative.init(filesDir.absolutePath, applicationInfo.nativeLibraryDir)
-        // TODO(M3): bootstrap installation (ferrux-env installer) goes here, before
-        // the first session: extract the prefix into files/usr via a staging dir.
+        bootstrap = BootstrapInstaller(this)
     }
 
     companion object {

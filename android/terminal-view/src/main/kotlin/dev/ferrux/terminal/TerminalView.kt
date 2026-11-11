@@ -76,6 +76,7 @@ class TerminalView @JvmOverloads constructor(
             // A selection belongs to the session it was made in.
             selection.finish(clear = true)
             field = value
+            accessibility.reset()
             composing = ""
             lastResize = 0 to 0
             updateGridSize()
@@ -106,6 +107,13 @@ class TerminalView @JvmOverloads constructor(
      * with the new size in pixels, e.g. to persist [textSizeSp].
      */
     var onTextSizeChanged: ((Float) -> Unit)? = null
+
+    /**
+     * Ctrl+Alt key presses from a hardware keyboard that the host app may claim (e.g.
+     * session switching). Return true to consume the key; otherwise it goes to the
+     * terminal as usual. Ctrl+Alt+= / - (zoom) are handled before this.
+     */
+    var onShortcut: ((KeyEvent) -> Boolean)? = null
 
     /** Font size in pixels. */
     var textSizePx: Float = TypedValue.applyDimension(
@@ -381,7 +389,22 @@ class TerminalView @JvmOverloads constructor(
     fun onScreenUpdated() {
         // Output keeps the cursor visible, like most terminals.
         post { restartBlink() }
+        accessibility.onScreenChanged()
     }
+
+    // ---------------------------------------------------------------- accessibility
+
+    /** Screen-reader support: rows as virtual text nodes, polite output announcements. */
+    private val accessibility = TerminalAccessibility(this)
+
+    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider =
+        accessibility.provider
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean =
+        accessibility.onHover(event) || super.dispatchHoverEvent(event)
+
+    /** Top of [row] in view coordinates (rows below the grid continue the pattern). */
+    internal fun rowTop(row: Int): Float = paddingTop + row * cellHeight
 
     fun showKeyboard() {
         requestFocus()
@@ -796,7 +819,7 @@ class TerminalView @JvmOverloads constructor(
         return true
     }
 
-    private fun rowAt(y: Float): Int =
+    internal fun rowAt(y: Float): Int =
         ((y - paddingTop) / cellHeight).toInt().coerceIn(0, max(0, frameRows - 1))
 
     private fun colAt(x: Float): Int =
@@ -1140,6 +1163,7 @@ class TerminalView @JvmOverloads constructor(
                 zoomBy(factor)
                 return true
             }
+            if (onShortcut?.invoke(event) == true) return true
         }
         val meta = event.metaState
         val special = specialKey(keyCode)
