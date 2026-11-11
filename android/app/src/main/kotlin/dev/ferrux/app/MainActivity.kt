@@ -14,9 +14,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.ferrux.app.ui.BootstrapScreen
 import dev.ferrux.app.ui.FerruxScreen
 import dev.ferrux.app.ui.FerruxTheme
 import dev.ferrux.app.ui.NativeMissingScreen
@@ -27,12 +30,17 @@ class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<FerruxService?>(null)
     private var isBound = false
 
+    /** False while the first-run bootstrap screen is shown. */
+    private var setupDone by mutableStateOf(true)
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             val bound = (binder as FerruxService.LocalBinder).service
             service = bound
+            // Running sessions (e.g. after "Use Android's shell") win over setup.
+            if (bound.sessions.sessions.value.isNotEmpty()) setupDone = true
             // Like Termux: opening the app always lands in a running shell.
-            if (bound.sessions.sessions.value.isEmpty()) newSession()
+            if (setupDone) ensureSession()
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -51,10 +59,23 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
 
         val loadError = FerruxAppNative.loadError
+        val installer = (application as FerruxApplication).bootstrap
+        setupDone = installer == null || !installer.available ||
+            installer.state.value == BootstrapState.Installed
         setContent {
             FerruxTheme {
                 if (loadError != null) {
                     NativeMissingScreen(loadError)
+                } else if (!setupDone && installer != null) {
+                    val state by installer.state.collectAsStateWithLifecycle()
+                    LaunchedEffect(state) {
+                        if (state == BootstrapState.Installed) finishSetup()
+                    }
+                    BootstrapScreen(
+                        state = state,
+                        onInstall = installer::start,
+                        onUseSystemShell = ::finishSetup,
+                    )
                 } else {
                     FerruxScreen(
                         service = service,
@@ -81,6 +102,17 @@ class MainActivity : ComponentActivity() {
         isBound = false
         service = null
         super.onDestroy()
+    }
+
+    /** Leaves the setup screen for the terminal (bash, or Android's sh if skipped). */
+    private fun finishSetup() {
+        setupDone = true
+        ensureSession()
+    }
+
+    private fun ensureSession() {
+        val svc = service ?: return
+        if (svc.sessions.sessions.value.isEmpty()) newSession()
     }
 
     private fun newSession() {

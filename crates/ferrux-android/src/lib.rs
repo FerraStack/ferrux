@@ -24,7 +24,7 @@ use ferrux_jni_core::{
 };
 use jni::objects::{JClass, JObjectArray, JString};
 use jni::strings::JNIStr;
-use jni::sys::{JavaVM, jint, jlong};
+use jni::sys::{JavaVM, jboolean, jint, jlong};
 use jni::{Env, NativeMethod, jni_str, native_method};
 
 /// The Kotlin class in the app module that declares the app natives.
@@ -57,6 +57,22 @@ pub const APP_NATIVES: &[NativeMethod<'static>] = &[
             cols: jint,
         ) -> jlong,
         fn = natives::create_session,
+    },
+    native_method! {
+        static fn is_bootstrapped() -> jboolean,
+        fn = natives::is_bootstrapped,
+    },
+    native_method! {
+        static fn bootstrap_info() -> JString[],
+        fn = natives::bootstrap_info,
+    },
+    native_method! {
+        static fn install_bootstrap(archive: JString, sha256: JString) -> JString,
+        fn = natives::install_bootstrap,
+    },
+    native_method! {
+        static fn bootstrap_progress() -> JString[],
+        fn = natives::bootstrap_progress,
     },
 ];
 
@@ -102,6 +118,44 @@ mod natives {
         _: JClass<'local>,
     ) -> JResult<JObjectArray<'local, JString<'local>>> {
         new_string_array(env, &core::default_env())
+    }
+
+    pub fn is_bootstrapped(_: &mut Env<'_>, _: JClass<'_>) -> JResult<jboolean> {
+        Ok(core::is_bootstrapped())
+    }
+
+    pub fn bootstrap_info<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JObjectArray<'local, JString<'local>>> {
+        match core::bootstrap_info() {
+            Some(info) => new_string_array(env, &info),
+            // null: no bootstrap for this ABI.
+            None => Ok(JObjectArray::default()),
+        }
+    }
+
+    pub fn install_bootstrap<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+        archive: JString<'local>,
+        sha256: JString<'local>,
+    ) -> JResult<JString<'local>> {
+        let archive = archive.try_to_string(env)?;
+        let sha256 = sha256.try_to_string(env)?;
+        match core::install_bootstrap(&archive, &sha256) {
+            // null: success.
+            Ok(()) => Ok(JString::default()),
+            Err(message) => JString::from_str(env, message),
+        }
+    }
+
+    pub fn bootstrap_progress<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JObjectArray<'local, JString<'local>>> {
+        let progress = core::bootstrap_progress().map(|v| v.to_string());
+        new_string_array(env, &progress)
     }
 
     #[allow(clippy::too_many_arguments)]

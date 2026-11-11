@@ -175,7 +175,7 @@ jobs:
     needs: android
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60 # includes a first-run bootstrap and pkg install
     strategy:
       fail-fast: false
       matrix:

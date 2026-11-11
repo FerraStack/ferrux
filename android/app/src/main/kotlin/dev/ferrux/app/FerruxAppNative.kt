@@ -20,6 +20,29 @@ object FerruxAppNative {
     /** Initialises the filesystem layout. Idempotent. */
     @JvmStatic external fun init(filesDir: String, nativeLibDir: String)
 
+    /** Whether the bootstrap (`$PREFIX` with a shell) is installed. */
+    @JvmStatic external fun isBootstrapped(): Boolean
+
+    /**
+     * The bootstrap pinned for this ABI as `[url, sha256, release]`, or null if
+     * there is none (unsupported ABI).
+     */
+    @JvmStatic external fun bootstrapInfo(): Array<String>?
+
+    /**
+     * Verifies [archive] against [sha256] and installs it as `$PREFIX` (staged,
+     * then atomically renamed). Blocking; call off the main thread.
+     *
+     * @return null on success, otherwise an error message
+     */
+    @JvmStatic external fun installBootstrap(archive: String, sha256: String): String?
+
+    /**
+     * Progress of a running [installBootstrap] as decimal `[stage, done, total]`;
+     * stage 0 = idle, 1 = verifying (bytes), 2 = extracting (files), 3 = finishing.
+     */
+    @JvmStatic external fun bootstrapProgress(): Array<String>
+
     /** Program to run for a new interactive session. */
     @JvmStatic external fun defaultShell(): String
 

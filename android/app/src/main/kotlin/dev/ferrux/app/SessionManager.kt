@@ -124,7 +124,8 @@ class SessionManager(private val context: Context) {
         val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
             ?.let { File(it) } ?: File(context.filesDir, "home")
         home.mkdirs()
-        // TODO(M3): once the bootstrap is installed, defaultShell() returns $PREFIX/bin/login.
+        // $PREFIX/bin/bash (login shell, via the system linker) once the bootstrap
+        // is installed, else /system/bin/sh; createSession adds the login flags.
         return FerruxAppNative.createSession(
             FerruxAppNative.defaultShell(), emptyArray(), env, cwd ?: home.absolutePath, rows, cols,
         )
