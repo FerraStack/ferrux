@@ -8,6 +8,8 @@ import android.content.Intent
 import android.util.Base64
 import android.util.Log
 import dev.ferrux.app.FerruxSettings
+import dev.ferrux.app.BootstrapState
+import dev.ferrux.app.FerruxApplication
 import dev.ferrux.app.SessionManager
 import dev.ferrux.app.ui.ActiveTerminal
 import dev.ferrux.app.FerruxAppNative
@@ -85,9 +87,14 @@ class DebugReceiver : BroadcastReceiver() {
             append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
             // Exit code per session, "-" while running.
             append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
+            val bootstrapped = FerruxAppNative.loadError == null && FerruxAppNative.isBootstrapped()
+            append(" bootstrap=").append(if (bootstrapped) "installed" else "missing")
+            val setup = (context.applicationContext as? FerruxApplication)?.bootstrap?.state?.value
+            append(" setup=").append(setupName(setup))
             append(" titles=").append(sessions.joinToString("|") { it.label })
             append("\n---\n")
-            append(text)
+            // Without a session, show why setup failed (if it did).
+            append(if (current == 0L && setup is BootstrapState.Failed) setup.message else text)
             append('\n')
         }
         File(context.filesDir, "debug-screen.txt").writeText(dump)
@@ -104,6 +111,17 @@ class DebugReceiver : BroadcastReceiver() {
         }
         File(context.filesDir, "debug-ui.txt").writeText(ui)
         ui.lineSequence().forEach { Log.i(TAG, "ui: $it") }
+    }
+
+    private fun setupName(state: BootstrapState?): String = when (state) {
+        null -> "none"
+        BootstrapState.Idle -> "idle"
+        is BootstrapState.Downloading -> "downloading"
+        is BootstrapState.Verifying -> "verifying"
+        is BootstrapState.Extracting -> "extracting"
+        BootstrapState.Finishing -> "finishing"
+        BootstrapState.Installed -> "installed"
+        is BootstrapState.Failed -> "failed"
     }
 
     private companion object {

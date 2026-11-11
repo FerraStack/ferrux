@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <defs>
+    <linearGradient id="hex" gradientUnits="userSpaceOnUse" x1="23" y1="54" x2="85" y2="54">
+      <stop offset="0" stop-color="#FF8A00"/>
+      <stop offset="0.32" stop-color="#FF6A00"/>
+      <stop offset="0.68" stop-color="#7B2CFF"/>
+      <stop offset="1" stop-color="#9B4DFF"/>
+    </linearGradient>
+    <linearGradient id="orange" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="0" y2="68">
+      <stop offset="0" stop-color="#FF8A00"/>
+      <stop offset="1" stop-color="#FF6A00"/>
+    </linearGradient>
+    <linearGradient id="violet" gradientUnits="userSpaceOnUse" x1="0" y1="40" x2="0" y2="68">
+      <stop offset="0" stop-color="#9B4DFF"/>
+      <stop offset="1" stop-color="#7B2CFF"/>
+    </linearGradient>
+    <linearGradient id="diag" gradientUnits="userSpaceOnUse" x1="36" y1="68" x2="72" y2="38">
+      <stop offset="0" stop-color="#FF8A00"/>
+      <stop offset="0.35" stop-color="#FF6A00"/>
+      <stop offset="0.65" stop-color="#7B2CFF"/>
+      <stop offset="1" stop-color="#9B4DFF"/>
+    </linearGradient>
+  </defs>
+  <path d="M51,24.73 A6,6 0 0 1 57,24.73 L77.85,36.77 A6,6 0 0 1 80.85,41.96 L80.85,66.04 A6,6 0 0 1 77.85,71.23 L57,83.27 A6,6 0 0 1 51,83.27 L30.15,71.23 A6,6 0 0 1 27.15,66.04 L27.15,41.96 A6,6 0 0 1 30.15,36.77 Z" fill="#130C22"/>
+  <path d="M51,24.73 A6,6 0 0 1 57,24.73 L77.85,36.77 A6,6 0 0 1 80.85,41.96 L80.85,66.04 A6,6 0 0 1 77.85,71.23 L57,83.27 A6,6 0 0 1 51,83.27 L30.15,71.23 A6,6 0 0 1 27.15,66.04 L27.15,41.96 A6,6 0 0 1 30.15,36.77 Z" fill="none" stroke="url(#hex)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38.5,42.5 L49.5,53.5 L38.5,64.5" fill="none" stroke="url(#orange)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M55.5,64.5 L69.5,64.5" fill="none" stroke="url(#violet)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
