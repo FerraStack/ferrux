@@ -91,7 +91,7 @@ class DebugReceiver : BroadcastReceiver() {
             append(" bootstrap=").append(if (bootstrapped) "installed" else "missing")
             val setup = (context.applicationContext as? FerruxApplication)?.bootstrap?.state?.value
             append(" setup=").append(setupName(setup))
-            append(" titles=").append(sessions.joinToString("|") { it.title })
+            append(" titles=").append(sessions.joinToString("|") { it.label })
             append("\n---\n")
             // Without a session, show why setup failed (if it did).
             append(if (current == 0L && setup is BootstrapState.Failed) setup.message else text)

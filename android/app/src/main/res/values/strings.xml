@@ -4,6 +4,16 @@
     <string name="sessions">Sessions</string>
     <string name="new_session">New session</string>
     <string name="kill_session">Kill session</string>
+    <!-- Drawer row menu; %1$s is the session's name. -->
+    <string name="session_options">Options for %1$s</string>
+    <string name="rename_session">Rename</string>
+    <string name="move_session_up">Move up</string>
+    <string name="move_session_down">Move down</string>
+    <string name="rename_session_title">Rename session</string>
+    <string name="rename_session_hint">Leave empty to show the title the program sets.</string>
+    <string name="rename_session_name">Name</string>
+    <string name="rename_session_confirm">Rename</string>
+    <string name="cancel">Cancel</string>
     <string name="open_drawer">Open session drawer</string>
     <string name="native_missing">libferrux.so failed to load. Build the APK without -Pferrux.skipCargo=true.\n\n%1$s</string>
     <string name="session_failed">Could not start a session: %1$s</string>

@@ -53,7 +53,9 @@ are tested on Linux. Other apps (Ferride, API clients) reuse the terminal throug
 The app opens straight into a shell, with the terminal edge to edge. The extra-keys
 row sits above the soft keyboard. A single tap on CTRL or ALT applies it to the next
 key; a double tap locks it. The arrow and page keys repeat while held. To open the
-session drawer, swipe from the left edge or tap ☰. With TalkBack or Switch Access,
+session drawer, swipe from the left edge or tap ☰. In the drawer, a session's ⋮ menu
+renames it or moves it up or down; a name you give it stays, whatever title the program
+sets (leave it empty to go back to the program's title). With TalkBack or Switch Access,
 CTRL and ALT are switches that announce their state (off, on for the next key, or
 locked), keys have spoken names ("Escape", "Up arrow", "Slash"), and every key can be
 activated.
@@ -212,8 +214,8 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     a process restart (saved zoom); exited sessions (notice, drawer badge,
     restart in the same directory, swipe to close, clean exit closes); the
     notification (session count, tap to open, Exit closes everything, wake lock);
-    keep screen on; the screen reader (rows as text nodes, announced output); and the
-    Ctrl+Alt session shortcuts.
+    keep screen on; the screen reader (rows as text nodes, announced output); the
+    Ctrl+Alt session shortcuts; and renaming and reordering sessions.
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only
