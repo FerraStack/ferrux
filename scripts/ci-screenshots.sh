@@ -1189,8 +1189,14 @@ expect_screen '^sessions=3 ' "no keys leaked into a new session"
 tap_node 'content-desc="Sessions"'
 wait_node 'text="Session 3"' > /dev/null
 sleep 1
+# keycombination can leave the soft keyboard up. Hide it before the shot, and
+# do not use Back to close the drawer: Back is consumed by the IME, so the
+# drawer stays open and the Sessions key is not in the tree.
+hide_ime
 shot 26-session-shortcuts
-adb shell input keyevent KEYCODE_BACK # close the drawer before the rename steps
+if [ -n "$(node 'content-desc="Close navigation menu"')" ]; then
+  tap_node 'content-desc="Close navigation menu"'
+fi
 
 log "27: rename and reorder sessions from the drawer"
 hide_ime
