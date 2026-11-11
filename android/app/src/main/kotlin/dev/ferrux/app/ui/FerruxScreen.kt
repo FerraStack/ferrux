@@ -78,6 +78,8 @@ import dev.ferrux.app.FerruxSettings
 import dev.ferrux.app.R
 import dev.ferrux.app.SessionInfo
 import dev.ferrux.app.SessionManager
+import dev.ferrux.app.SessionShortcut
+import dev.ferrux.app.SessionShortcuts
 import dev.ferrux.terminal.NativeSessionBackend
 import dev.ferrux.terminal.TerminalView
 import kotlinx.coroutines.flow.collectLatest
@@ -107,6 +109,29 @@ fun FerruxScreen(
 private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, onExit: () -> Unit) {
     val sessions by manager.sessions.collectAsStateWithLifecycle()
     val currentId by manager.current.collectAsStateWithLifecycle()
+
+    // Hardware-keyboard session shortcuts (Ctrl+Alt+C, ↑/↓, 1…9; see SessionShortcuts).
+    val currentOnNewSession by rememberUpdatedState(onNewSession)
+    val onShortcut: (Int) -> Boolean = remember(manager) {
+        { keyCode ->
+            when (val shortcut = SessionShortcuts.of(keyCode)) {
+                null -> false
+                SessionShortcut.New -> {
+                    currentOnNewSession()
+                    true
+                }
+                is SessionShortcut.Move -> {
+                    val ids = manager.sessions.value.map { it.id }
+                    SessionShortcuts.neighbour(ids, manager.current.value, shortcut.delta)?.let(manager::select)
+                    true
+                }
+                is SessionShortcut.Go -> {
+                    manager.sessions.value.getOrNull(shortcut.index)?.let { manager.select(it.id) }
+                    true
+                }
+            }
+        }
+    }
     val current = sessions.firstOrNull { it.id == currentId }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -226,6 +251,7 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                                 // is sized once.
                                 settings.fontSizeSp.value?.let { view.textSizeSp = it }
                                 view.onTextSizeChanged = { settings.setFontSize(view.textSizeSp) }
+                                view.onShortcut = { event -> onShortcut(event.keyCode) }
                                 terminalView = view
                                 ActiveTerminal.view = java.lang.ref.WeakReference(view)
                             }

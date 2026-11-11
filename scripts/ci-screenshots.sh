@@ -183,6 +183,9 @@ full_rows() {
 # zoom <EQUALS|MINUS>: Ctrl+Alt+= / Ctrl+Alt+- from a hardware keyboard.
 zoom() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT "KEYCODE_$1"; }
 
+# ctrl_alt <KEY>: Ctrl+Alt+<KEY> from a hardware keyboard, e.g. ctrl_alt DPAD_UP.
+ctrl_alt() { adb shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_ALT_LEFT "KEYCODE_$1"; }
+
 # --- UI nodes ----------------------------------------------------------------
 
 ui_dump() {
@@ -1045,6 +1048,34 @@ printf '%s' "$out" | grep 'speak this now' > /dev/null || fail "the live output 
 printf '%s' "$out" | grep -F 'echo speak' > /dev/null && fail "the typed command was announced again: $out"
 log "ok: the live output node holds the new output, not the typed command"
 shot 25-screen-reader
+
+log "26: hardware-keyboard session shortcuts: Ctrl+Alt+C, Ctrl+Alt+up/down, Ctrl+Alt+1...9"
+hide_ime
+expect_screen '^sessions=1 ' "one session to start with"
+s1="$(header_field current)"
+ctrl_alt C
+expect_screen '^sessions=2 ' "Ctrl+Alt+C opened a session"
+expect_field current "v != $s1" "the new session is shown"
+s2="$(header_field current)"
+expect_screen '^~ \$' "its prompt"
+ctrl_alt C
+expect_screen '^sessions=3 ' "Ctrl+Alt+C opened another"
+expect_field current "v != $s2" "and showed it"
+s3="$(header_field current)"
+ctrl_alt DPAD_UP
+expect_field current "v == $s2" "Ctrl+Alt+Up: previous session"
+ctrl_alt DPAD_DOWN
+expect_field current "v == $s3" "Ctrl+Alt+Down: next session"
+ctrl_alt DPAD_DOWN
+expect_field current "v == $s1" "Ctrl+Alt+Down on the last session wraps to the first"
+ctrl_alt 2
+expect_field current "v == $s2" "Ctrl+Alt+2: the second session"
+expect_screen '^sessions=3 ' "no keys leaked into a new session"
+tap_node 'content-desc="Sessions"'
+wait_node 'text="Session 3"' > /dev/null
+sleep 1
+shot 26-session-shortcuts
+adb shell input keyevent KEYCODE_BACK # close the drawer
 
 check_crash
 log "all checks passed"
