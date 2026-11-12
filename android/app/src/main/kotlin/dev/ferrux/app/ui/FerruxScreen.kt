@@ -264,6 +264,10 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     BackHandler(enabled = settingsOpen) { settingsOpen = false }
     // Typing goes back to the terminal when Settings closes.
     LaunchedEffect(settingsOpen) { if (!settingsOpen) terminalView?.requestFocus() }
+    DisposableEffect(drawerState) {
+        ActiveTerminal.openDrawer = { scope.launch { drawerState.open() } }
+        onDispose { ActiveTerminal.openDrawer = null }
+    }
     val openSettings = {
         terminalView?.let { view ->
             view.context.getSystemService(InputMethodManager::class.java)
@@ -678,6 +682,8 @@ private fun RenameDialog(session: SessionInfo, onRename: (String) -> Unit, onDis
 internal object ActiveTerminal {
     @Volatile
     var view: java.lang.ref.WeakReference<TerminalView>? = null
+    @Volatile
+    var openDrawer: (() -> Unit)? = null
 }
 
 /** Shown when libferrux.so is missing (APK built with -Pferrux.skipCargo=true). */

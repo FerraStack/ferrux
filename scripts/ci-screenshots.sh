@@ -567,6 +567,7 @@ adb shell settings put global animator_duration_scale 0
 # under test (the soft keyboard then never connects). Our own crashes are still
 # caught from logcat by check_crash.
 adb shell settings put global hide_error_dialogs 1
+adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton 2>/dev/null || true
 adb shell wm size | tee "$OUT/display.txt"
 
 adb install -r -g "$APK"
@@ -1268,18 +1269,19 @@ hide_keyboard() {
 # extra keys are hidden), then waits for the theme picker.
 open_settings() {
   hide_keyboard
-  local i
-  for i in 1 2; do
-    if [ -n "$(node 'content-desc="Sessions"')" ]; then
-      tap_node 'content-desc="Sessions"'
-    else
-      local y
-      y="$(ui_field origin | cut -d, -f2)"
-      adb shell input swipe 12 $((y + 600)) 500 $((y + 600)) 250
-    fi
+  if [ -n "$(node 'content-desc="Sessions"')" ]; then
+    tap_node 'content-desc="Sessions"'
+  else
+    local y
+    y="$(ui_field origin | cut -d, -f2)"
+    adb shell input swipe 12 $((y + 600)) 500 $((y + 600)) 250
     sleep 0.5
-    [ -n "$(node 'text="Settings"')" ] && break
-  done
+    if [ -z "$(node 'text="Settings"')" ]; then
+      adb shell am start -n "$ACTIVITY" > /dev/null 2>&1 || true
+      sleep 0.5
+      adb shell am broadcast -n "$RECEIVER" -a dev.ferrux.debug.OPEN_DRAWER > /dev/null
+    fi
+  fi
   tap_node 'text="Settings"'
   wait_node 'Ferrux Night theme' > /dev/null
 }

@@ -61,6 +61,10 @@ class DebugReceiver : BroadcastReceiver() {
             FerruxSettings.get(context).setKeepScreenOn(intent.getBooleanExtra("on", false))
             return
         }
+        if (intent.action == ACTION_OPEN_DRAWER) {
+            ActiveTerminal.openDrawer?.invoke()
+            return
+        }
         val manager = SessionManager.active
         val sessions = manager?.sessions?.value.orEmpty()
         val current = manager?.current?.value ?: 0L
@@ -139,5 +143,6 @@ class DebugReceiver : BroadcastReceiver() {
         const val ACTION_SHOW_IME = "dev.ferrux.debug.SHOW_IME"
         const val ACTION_TYPE = "dev.ferrux.debug.TYPE"
         const val ACTION_KEEP_SCREEN_ON = "dev.ferrux.debug.KEEP_SCREEN_ON"
+        const val ACTION_OPEN_DRAWER = "dev.ferrux.debug.OPEN_DRAWER"
     }
 }
