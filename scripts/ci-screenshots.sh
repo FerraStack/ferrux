@@ -1268,13 +1268,18 @@ hide_keyboard() {
 # extra keys are hidden), then waits for the theme picker.
 open_settings() {
   hide_keyboard
-  if [ -n "$(node 'content-desc="Sessions"')" ]; then
-    tap_node 'content-desc="Sessions"'
-  else
-    local y
-    y="$(ui_field origin | cut -d, -f2)"
-    adb shell input swipe 2 $((y + 600)) 500 $((y + 600)) 300
-  fi
+  local i
+  for i in 1 2; do
+    if [ -n "$(node 'content-desc="Sessions"')" ]; then
+      tap_node 'content-desc="Sessions"'
+    else
+      local y
+      y="$(ui_field origin | cut -d, -f2)"
+      adb shell input swipe 12 $((y + 600)) 500 $((y + 600)) 250
+    fi
+    sleep 0.5
+    [ -n "$(node 'text="Settings"')" ] && break
+  done
   tap_node 'text="Settings"'
   wait_node 'Ferrux Night theme' > /dev/null
 }

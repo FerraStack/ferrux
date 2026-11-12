@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
@@ -445,7 +446,8 @@ private fun EdgeSwipeStrip(onOpen: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier
             .fillMaxHeight()
-            .width(14.dp)
+            .width(24.dp)
+            .systemGestureExclusion()
             .pointerInput(Unit) {
                 var dragged = 0f
                 detectHorizontalDragGestures(
