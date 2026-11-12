@@ -14,6 +14,7 @@
                 <action android:name="dev.ferrux.debug.SHOW_IME" />
                 <action android:name="dev.ferrux.debug.TYPE" />
                 <action android:name="dev.ferrux.debug.KEEP_SCREEN_ON" />
+                <action android:name="dev.ferrux.debug.OPEN_DRAWER" />
             </intent-filter>
         </receiver>
     </application>

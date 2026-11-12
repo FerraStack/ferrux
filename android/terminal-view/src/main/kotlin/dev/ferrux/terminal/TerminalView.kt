@@ -714,7 +714,11 @@ class TerminalView @JvmOverloads constructor(
         }
     }
 
+    /** What the last frame drew for the cursor (`block`, `underline`, `bar`, `hollow`, …), for tests. */
+    private var cursorDrawn = ""
+
     private fun drawCursor(canvas: Canvas, rows: Int, cols: Int) {
+        cursorDrawn = ""
         val s = snapshot
         val row = s[L.H_CURSOR_ROW]
         val col = s[L.H_CURSOR_COL]
@@ -735,10 +739,18 @@ class TerminalView @JvmOverloads constructor(
         val right = left + cellWidth * if (wide) 2 else 1
         // The cursor uses the palette's cursor colour on the default background,
         // and the cell's own foreground on coloured cells.
-        val cursorColor = if (bg == s[L.H_DEFAULT_BG]) CURSOR_COLOR else fg
+        val cursorColor = if (bg == s[L.H_DEFAULT_BG]) s[L.H_CURSOR_COLOR] else fg
         fillPaint.color = cursorColor
         val shape = shapeBits and L.CURSOR_SHAPE_MASK
         if (shape == L.CURSOR_HIDDEN) return
+        cursorDrawn = when {
+            !hasFocus() -> "unfocused"
+            shape == L.CURSOR_BLOCK && shapeBits and L.CURSOR_HOLLOW != 0 -> "hollow"
+            shape == L.CURSOR_BLOCK -> "block"
+            shape == L.CURSOR_UNDERLINE -> "underline"
+            shape == L.CURSOR_BAR -> "bar"
+            else -> ""
+        }
         if (!hasFocus()) {
             // Unfocused: a steady hollow box, like desktop terminals.
             linePaint.color = cursorColor
@@ -962,6 +974,11 @@ class TerminalView @JvmOverloads constructor(
             "linkMenu" to if (linkMode != null) linkMenuTitles.joinToString("|") else "",
             "linkMenuUri" to linkMenuUri.orEmpty(),
             "cursor" to "${snapshot[L.H_CURSOR_ROW]},${snapshot[L.H_CURSOR_COL]}",
+            "defaultBg" to argbHex(snapshot[L.H_DEFAULT_BG]),
+            "cursorColor" to argbHex(snapshot[L.H_CURSOR_COLOR]),
+            "cursorDrawn" to cursorDrawn,
+            "cursorBlink" to if (cursorBlink) "1" else "0",
+            "textSizeSp" to "%.1f".format(java.util.Locale.ROOT, textSizeSp),
         ) + selection.debugState()
     }
 
@@ -1211,8 +1228,8 @@ class TerminalView @JvmOverloads constructor(
         private const val MENU_OPEN_LINK = 3
         private const val MENU_COPY_LINK = 4
 
-        /** Cursor colour of the default "Ferrux Night" palette (ferrux-term). */
-        private const val CURSOR_COLOR = 0xFFF29E4C.toInt()
+        private fun argbHex(argb: Int) = "#%06X".format(argb and 0xFFFFFF)
+
         private const val MIN_TEXT_SIZE_SP = 6f
         private const val MAX_TEXT_SIZE_SP = 40f
         private const val LINK_UNDERLINE_ALPHA = 0x99

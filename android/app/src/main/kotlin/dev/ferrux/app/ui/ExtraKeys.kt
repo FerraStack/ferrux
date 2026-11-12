@@ -58,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.ferrux.app.ExtraKeysPreset
 import dev.ferrux.app.R
 import dev.ferrux.terminal.StickyModifiers
 import dev.ferrux.terminal.TerminalKeys
@@ -152,6 +153,17 @@ data class ExtraKeysLayout(val rows: List<List<ExtraKey>>) {
                 listOf("TAB", "CTRL", "ALT", "LEFT", "DOWN", "RIGHT", "PGDN", "|"),
             ),
         )
+
+        /** One row with the essentials, for small screens. */
+        val OneRow = parse(listOf(listOf("ESC", "TAB", "CTRL", "ALT", "LEFT", "DOWN", "UP", "RIGHT", "DRAWER")))
+
+        val Hidden = ExtraKeysLayout(emptyList())
+
+        fun of(preset: ExtraKeysPreset) = when (preset) {
+            ExtraKeysPreset.TWO_ROWS -> Default
+            ExtraKeysPreset.ONE_ROW -> OneRow
+            ExtraKeysPreset.HIDDEN -> Hidden
+        }
     }
 }
 
@@ -222,6 +234,7 @@ fun ExtraKeysRow(
     onAction: (ExtraKeyAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (layout.rows.isEmpty()) return
     Column(
         modifier
             .fillMaxWidth()

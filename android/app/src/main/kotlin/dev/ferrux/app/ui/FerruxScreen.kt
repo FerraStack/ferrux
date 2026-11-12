@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.ferrux.app.ui
 
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.view.HapticFeedbackConstants
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
@@ -60,6 +69,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -72,6 +82,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.ferrux.app.BellMode
 import dev.ferrux.app.ExitedSessionBackend
 import dev.ferrux.app.FerruxService
 import dev.ferrux.app.FerruxSettings
@@ -152,6 +163,27 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
     val appContext = LocalContext.current.applicationContext
     val settings = remember(appContext) { FerruxSettings.get(appContext) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+
+    val themeId by settings.theme.collectAsStateWithLifecycle()
+    val cursorStyle by settings.cursorStyle.collectAsStateWithLifecycle()
+    val cursorBlink by settings.cursorBlink.collectAsStateWithLifecycle()
+    val fontSizeSp by settings.fontSizeSp.collectAsStateWithLifecycle()
+    val extraKeys by settings.extraKeys.collectAsStateWithLifecycle()
+    val bell by settings.bell.collectAsStateWithLifecycle()
+
+    // Theme and cursor live in the native sessions (FerruxService also applies them, for
+    // sessions created without this screen); redraw with the new colours.
+    LaunchedEffect(manager, terminalView, themeId, cursorStyle) {
+        manager.setAppearance(TerminalTheme.byId(themeId).id, cursorStyle.code)
+        terminalView?.invalidate()
+    }
+    LaunchedEffect(terminalView, cursorBlink) { terminalView?.cursorBlink = cursorBlink }
+    // The Settings slider (pinch zoom saves to the same setting).
+    LaunchedEffect(terminalView, fontSizeSp) {
+        val size = fontSizeSp ?: return@LaunchedEffect
+        terminalView?.let { if (it.textSizeSp != size) it.textSizeSp = size }
+    }
 
     // "Keep screen on" (off by default): holds the window's KEEP_SCREEN_ON flag while
     // the terminal is shown.
@@ -189,11 +221,26 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
         manager.addOutputListener(listener)
         onDispose { manager.removeOutputListener(listener) }
     }
+    val bellMode by rememberUpdatedState(bell)
     LaunchedEffect(manager, terminalView) {
-        manager.bells.collect { id ->
-            if (id == manager.current.value) {
-                terminalView?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        // Created on the first beep; the emulator in CI, for one, has no audio.
+        var tone: ToneGenerator? = null
+        try {
+            manager.bells.collect { id ->
+                if (id != manager.current.value) return@collect
+                when (bellMode) {
+                    BellMode.VIBRATE -> terminalView?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    BellMode.BEEP -> {
+                        if (tone == null) {
+                            tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, BEEP_VOLUME) }.getOrNull()
+                        }
+                        tone?.startTone(ToneGenerator.TONE_PROP_BEEP, BEEP_MS)
+                    }
+                    BellMode.SILENT -> Unit
+                }
             }
+        } finally {
+            tone?.release()
         }
     }
     // OSC 52: ask before a program replaces the clipboard.
@@ -214,7 +261,22 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
         }
     }
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
+    BackHandler(enabled = settingsOpen) { settingsOpen = false }
+    // Typing goes back to the terminal when Settings closes.
+    LaunchedEffect(settingsOpen) { if (!settingsOpen) terminalView?.requestFocus() }
+    DisposableEffect(drawerState) {
+        ActiveTerminal.openDrawer = { scope.launch { drawerState.open() } }
+        onDispose { ActiveTerminal.openDrawer = null }
+    }
+    val openSettings = {
+        terminalView?.let { view ->
+            view.context.getSystemService(InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(view.windowToken, 0)
+        }
+        settingsOpen = true
+    }
 
+    Box(Modifier.fillMaxSize()) {
     ModalNavigationDrawer(
         drawerState = drawerState,
         // Dragging is only enabled to close; opening uses the edge strip below
@@ -233,6 +295,10 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 onMove = manager::move,
                 onNew = {
                     onNewSession()
+                    scope.launch { drawerState.close() }
+                },
+                onSettings = {
+                    openSettings()
                     scope.launch { drawerState.close() }
                 },
             )
@@ -309,7 +375,7 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
                 FerruxSnackbar(data, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
             }
             ExtraKeysRow(
-                layout = ExtraKeysLayout.Default,
+                layout = ExtraKeysLayout.of(extraKeys),
                 sticky = sticky,
                 onKey = { code -> terminalView?.sendKey(code) },
                 onText = { text -> terminalView?.sendText(text) },
@@ -321,7 +387,18 @@ private fun SessionsScreen(manager: SessionManager, onNewSession: () -> Unit, on
             )
         }
     }
+        AnimatedVisibility(
+            visible = settingsOpen,
+            enter = fadeIn() + slideInHorizontally { it / 6 },
+            exit = fadeOut() + slideOutHorizontally { it / 6 },
+        ) {
+            SettingsScreen(settings, onBack = { settingsOpen = false })
+        }
+    }
 }
+
+private const val BEEP_VOLUME = 60
+private const val BEEP_MS = 120
 
 /** A snackbar in the terminal's palette rather than Material's inverse colours. */
 @Composable
@@ -373,7 +450,8 @@ private fun EdgeSwipeStrip(onOpen: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier
             .fillMaxHeight()
-            .width(14.dp)
+            .width(24.dp)
+            .systemGestureExclusion()
             .pointerInput(Unit) {
                 var dragged = 0f
                 detectHorizontalDragGestures(
@@ -443,6 +521,7 @@ private fun SessionDrawer(
     onRename: (Long, String) -> Unit,
     onMove: (Long, Int) -> Unit,
     onNew: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     var renaming by remember { mutableStateOf<SessionInfo?>(null) }
     renaming?.let { session ->
@@ -504,6 +583,14 @@ private fun SessionDrawer(
             onClick = onNew,
             modifier = Modifier.padding(horizontal = 12.dp),
         )
+        NavigationDrawerItem(
+            label = { Text(stringResource(R.string.settings)) },
+            icon = { Icon(painterResource(R.drawable.ic_settings), null) },
+            selected = false,
+            onClick = onSettings,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Spacer(Modifier.height(12.dp))
     }
 }
 
@@ -595,6 +682,8 @@ private fun RenameDialog(session: SessionInfo, onRename: (String) -> Unit, onDis
 internal object ActiveTerminal {
     @Volatile
     var view: java.lang.ref.WeakReference<TerminalView>? = null
+    @Volatile
+    var openDrawer: (() -> Unit)? = null
 }
 
 /** Shown when libferrux.so is missing (APK built with -Pferrux.skipCargo=true). */

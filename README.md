@@ -99,7 +99,8 @@ A program can write the clipboard with OSC 52 (`printf "\e]52;c;<base64>\a"`), a
 ssh sessions do. Any program can, even `cat` of an untrusted file, so Ferrux asks
 first: "Session 1 wants to copy 8 characters to the clipboard". The question appears below
 the terminal, which shrinks while it is shown, so it never covers the line you are typing
-on. Writes over 1 MiB are ignored.
+on. To allow or deny these writes without asking, change the setting in Settings. Writes
+over 1 MiB are ignored.
 
 Pinch to zoom, or press Ctrl+Alt+= / Ctrl+Alt+- on a hardware keyboard. The font size
 is saved. Also on a hardware keyboard, as in Termux: Ctrl+Alt+C opens a new session,
@@ -137,6 +138,29 @@ The default palette is **Ferrux Night**:
 - Foreground is `#D6DCE5`, background `#0E1116`, cursor `#F29E4C` and selection `#264166`.
 - Entries 16–255 are the standard xterm colour cube and grayscale ramp.
 - Source: `crates/ferrux-term/src/color.rs`.
+
+Five more themes are bundled: Gruvbox Dark, Nord, Dracula, Solarized Dark and Solarized
+Light. The app's chrome (extra keys, drawer, Settings, system bars) takes its colours from
+the current theme.
+
+### Settings
+
+To open Settings, open the session drawer and tap **Settings**. Every change applies at
+once and is kept across restarts:
+
+- **Colour theme**: each theme shows a live preview with a prompt, `ls` colours, a diff,
+  a selection and the cursor.
+- **Font size**: 8–24 sp, with a slider or the A/A buttons. Pinch zoom changes the same
+  setting.
+- **Cursor**: block, underline or bar, and blinking or steady. A program can still choose
+  its own cursor (DECSCUSR).
+- **Extra keys**: two rows, one row or hidden. When they are hidden, swipe from the left
+  edge to open the drawer. Custom layouts (JSON) will come later.
+- **Bell**: vibrate, beep or silent.
+- **Keep screen on** while a terminal is on screen.
+- **Close sessions that exit cleanly** (on by default). When it is off, a session whose shell
+  exits with 0 stays open, like a failed one.
+- **Programs copying to the clipboard** (OSC 52): ask, allow or deny.
 
 ### Package name and prefix
 
@@ -215,7 +239,9 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
     restart in the same directory, swipe to close, clean exit closes); the
     notification (session count, tap to open, Exit closes everything, wake lock);
     keep screen on; the screen reader (rows as text nodes, announced output); the
-    Ctrl+Alt session shortcuts; and renaming and reordering sessions.
+    Ctrl+Alt session shortcuts; renaming and reordering sessions; and the
+    Settings screen (theme, font size, cursor, extra keys, bell, keep screen
+    on, OSC 52).
   - **API 30:** launch and `echo` only.
 
   Each step is checked against the real terminal grid, read through a debug-only

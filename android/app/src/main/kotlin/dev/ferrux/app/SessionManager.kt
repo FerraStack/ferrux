@@ -7,8 +7,8 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import dev.ferrux.terminal.TerminalNative
 import dev.ferrux.terminal.SessionEvent
+import dev.ferrux.terminal.TerminalNative
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -153,6 +153,15 @@ class SessionManager(private val context: Context) {
         return FerruxAppNative.createSession(
             FerruxAppNative.defaultShell(), emptyArray(), env, cwd ?: home.absolutePath, rows, cols,
         )
+    }
+
+    /**
+     * Applies colour theme [themeId] and cursor style [cursor] (a SnapshotLayout `CURSOR_*`
+     * code) to every session and to the sessions created from now on.
+     */
+    fun setAppearance(themeId: String, cursor: Int) {
+        TerminalNative.setAppearance(0, themeId, cursor)
+        for (session in _sessions.value) TerminalNative.setAppearance(session.id, themeId, cursor)
     }
 
     /** Names a session; a blank [name] goes back to the title its program sets. */

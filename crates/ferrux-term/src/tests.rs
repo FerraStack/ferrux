@@ -93,6 +93,41 @@ fn cursor_shape_and_visibility() {
 }
 
 #[test]
+fn themes_and_cursor_shape_change_at_runtime() {
+    let mut t = term(2, 10);
+    t.feed(b"\x1b]0;keep me\x07\x1b[31mR");
+    t.drain_events();
+    t.take_damage();
+    let nord = Theme::by_id("nord").unwrap();
+    t.set_palette(nord.palette());
+    let s = t.snapshot();
+    assert_eq!(s.default_bg, Rgb::from_u32(nord.background));
+    assert_eq!(
+        s.cell(0, 0).fg,
+        Rgb::from_u32(nord.ansi[1]),
+        "existing text recoloured"
+    );
+    assert_eq!(s.cursor_color, Rgb::from_u32(nord.cursor));
+    assert_eq!(t.take_damage(), Damage::Full);
+    assert!(t.drain_events().is_empty(), "no spurious title change");
+    assert_eq!(t.title().as_deref(), Some("keep me"));
+
+    t.set_cursor_shape(CursorShape::Bar);
+    assert_eq!(t.snapshot().cursor.shape, CursorShape::Bar);
+    // A program's choice (DECSCUSR 4 = steady underline) still wins.
+    t.feed(b"\x1b[4 q");
+    assert_eq!(t.snapshot().cursor.shape, CursorShape::Underline);
+    // OSC 11 overrides the theme's background.
+    t.feed(b"\x1b]11;rgb:01/02/03\x07");
+    t.set_palette(Palette::default());
+    assert_eq!(t.snapshot().default_bg, Rgb::new(1, 2, 3));
+
+    let mut out = vec![0i32; t.snapshot().encoded_len()];
+    t.snapshot().encode_ints(&mut out).unwrap();
+    assert_eq!(out[10] as u32, Palette::default().cursor.to_argb());
+}
+
+#[test]
 fn title_and_bell_events() {
     let mut t = term(2, 10);
     t.feed(b"\x1b]0;my title\x07\x07");

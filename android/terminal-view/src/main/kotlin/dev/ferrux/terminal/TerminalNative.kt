@@ -81,6 +81,22 @@ object TerminalNative {
 
     @JvmStatic external fun resize(id: Long, rows: Int, cols: Int)
 
+    /** The bundled colour themes as `id \t name \t dark(0|1)`; the first is the default. */
+    @JvmStatic external fun themes(): Array<String>
+
+    /**
+     * A theme's colours as ARGB: background, foreground, cursor, selection, accent, then
+     * the 16 ANSI colours. Null for an unknown theme.
+     */
+    @JvmStatic external fun themeColors(id: String): IntArray?
+
+    /**
+     * Applies theme [themeId] and the default cursor shape ([SnapshotLayout] `CURSOR_*`
+     * code; 0 keeps the current one) to session [id], or to sessions created from now
+     * on when [id] is 0. Returns false for an unknown session or theme.
+     */
+    @JvmStatic external fun setAppearance(id: Long, themeId: String, cursorShape: Int): Boolean
+
     /** Scrolls the viewport; positive [lines] scroll back into history. */
     @JvmStatic external fun scroll(id: Long, lines: Int)
 

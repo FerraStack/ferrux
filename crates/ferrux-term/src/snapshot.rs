@@ -102,6 +102,18 @@ impl CursorShape {
             CursorShape::HollowBlock => 0x101,
         }
     }
+
+    /// Inverse of [`CursorShape::code`]; `None` for 0 and unknown codes, so
+    /// callers can use 0 for "unchanged".
+    pub const fn from_code(code: u32) -> Option<Self> {
+        Some(match code {
+            1 => CursorShape::Block,
+            2 => CursorShape::Underline,
+            3 => CursorShape::Bar,
+            0x101 => CursorShape::HollowBlock,
+            _ => return None,
+        })
+    }
 }
 
 /// Cursor position (viewport coordinates) and shape.
@@ -151,6 +163,8 @@ pub struct Snapshot {
     pub history: usize,
     pub default_fg: Rgb,
     pub default_bg: Rgb,
+    /// The palette's (or OSC 12's) cursor colour, even while the cursor is hidden.
+    pub cursor_color: Rgb,
     pub modes: Modes,
     /// Zero-width characters attached to cells flagged
     /// [`CellFlags::COMBINING`], sorted by cell index.
@@ -299,15 +313,15 @@ impl Snapshot {
     pub const SELECTION_LEN: usize = 5;
 
     /// Length of the header in the integer encoding.
-    pub const HEADER_LEN: usize = 10;
+    pub const HEADER_LEN: usize = 11;
     /// Integers per cell in the integer encoding.
     pub const INTS_PER_CELL: usize = 4;
 
     /// Writes the compact integer encoding used across JNI.
     ///
     /// Header: `rows, cols, cursor_row, cursor_col, cursor_shape,
-    /// display_offset, default_bg_argb, mode_bits, history, default_fg_argb`,
-    /// followed by
+    /// display_offset, default_bg_argb, mode_bits, history, default_fg_argb,
+    /// cursor_argb`, followed by
     /// `codepoint, fg_argb, bg_argb, flags` per cell (row-major). Blank cells
     /// have codepoint 0. Then three variable-length sections:
     ///
@@ -336,6 +350,7 @@ impl Snapshot {
             self.modes.bits(),
             self.history as u32,
             self.default_fg.to_argb(),
+            self.cursor_color.to_argb(),
         ];
         let (head, body) = out.split_at_mut(Self::HEADER_LEN);
         for (dst, src) in head.iter_mut().zip(header) {

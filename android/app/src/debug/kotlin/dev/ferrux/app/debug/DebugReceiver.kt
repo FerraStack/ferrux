@@ -30,11 +30,15 @@ import java.util.Locale
  * Format: one `key=value` header line, then `---`, then the grid text.
  *
  * It also writes `files/debug-ui.txt`, one `key=value` per line: the terminal
- * view's geometry and selection state ([dev.ferrux.terminal.TerminalView.debugState])
- * and the clipboard text. Newlines in values are written as `\n`.
+ * view's geometry and selection state ([dev.ferrux.terminal.TerminalView.debugState]),
+ * the clipboard text and the settings ([FerruxSettings.debugState]). Newlines in values
+ * are written as `\n`.
  *
- * In the header, `view` is the identity of the on-screen TerminalView (0 if none)
- * and `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
+ * In the header, `view` identifies the on-screen TerminalView (0 if none) and
+ * `textSizeSp` its font size, so CI can tell a kept view from a recreated one.
+ * `view` mixes in the process id: ART's identity hash is 28 bits seeded from
+ * the clock, and a fresh process can otherwise reuse the same hash.
+ * `titles=` is the last field (custom names are [dev.ferrux.app.SessionInfo.label]).
  */
 class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -55,6 +59,10 @@ class DebugReceiver : BroadcastReceiver() {
         if (intent.action == ACTION_KEEP_SCREEN_ON) {
             // Stands in for the settings switch until the settings screen exists.
             FerruxSettings.get(context).setKeepScreenOn(intent.getBooleanExtra("on", false))
+            return
+        }
+        if (intent.action == ACTION_OPEN_DRAWER) {
+            ActiveTerminal.openDrawer?.invoke()
             return
         }
         val manager = SessionManager.active
@@ -83,7 +91,12 @@ class DebugReceiver : BroadcastReceiver() {
             append("sessions=${sessions.size} current=$current rows=$rows cols=$cols offset=$offset")
             // Runs on the main thread, so the view can be read directly.
             val view = ActiveTerminal.view?.get()
-            append(" view=").append(view?.let { System.identityHashCode(it) } ?: 0)
+            val viewToken = view?.let { v ->
+                val hash = System.identityHashCode(v).toLong() and 0x0fff_ffffL
+                val pid = android.os.Process.myPid().toLong() and 0xff_ffffL
+                hash or (pid shl 28)
+            } ?: 0L
+            append(" view=").append(viewToken)
             append(" textSizeSp=").append(view?.let { "%.2f".format(Locale.ROOT, it.textSizeSp) } ?: "-")
             // Exit code per session, "-" while running.
             append(" exits=").append(sessions.joinToString("|") { it.exitCode?.toString() ?: "-" })
@@ -108,6 +121,7 @@ class DebugReceiver : BroadcastReceiver() {
                     ?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
             }.getOrNull()
             append("clipboard=").append(clip.orEmpty().replace("\\", "\\\\").replace("\n", "\\n")).append('\n')
+            append("settings=").append(FerruxSettings.get(context).debugState()).append('\n')
         }
         File(context.filesDir, "debug-ui.txt").writeText(ui)
         ui.lineSequence().forEach { Log.i(TAG, "ui: $it") }
@@ -129,5 +143,6 @@ class DebugReceiver : BroadcastReceiver() {
         const val ACTION_SHOW_IME = "dev.ferrux.debug.SHOW_IME"
         const val ACTION_TYPE = "dev.ferrux.debug.TYPE"
         const val ACTION_KEEP_SCREEN_ON = "dev.ferrux.debug.KEEP_SCREEN_ON"
+        const val ACTION_OPEN_DRAWER = "dev.ferrux.debug.OPEN_DRAWER"
     }
 }

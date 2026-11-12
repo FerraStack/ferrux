@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -17,12 +18,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.ferrux.app.ui.BootstrapScreen
 import dev.ferrux.app.ui.FerruxScreen
 import dev.ferrux.app.ui.FerruxTheme
 import dev.ferrux.app.ui.NativeMissingScreen
+import dev.ferrux.app.ui.TerminalTheme
 import java.io.IOException
 
 class MainActivity : ComponentActivity() {
@@ -59,11 +63,15 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
 
         val loadError = FerruxAppNative.loadError
+        val settings = FerruxSettings.get(this)
         val installer = (application as FerruxApplication).bootstrap
         setupDone = installer == null || !installer.available ||
             installer.state.value == BootstrapState.Installed
         setContent {
-            FerruxTheme {
+            val themeId by settings.theme.collectAsStateWithLifecycle()
+            val theme = remember(themeId) { TerminalTheme.byId(themeId) }
+            LaunchedEffect(theme) { applyWindowColors(theme) }
+            FerruxTheme(theme) {
                 if (loadError != null) {
                     NativeMissingScreen(loadError)
                 } else if (!setupDone && installer != null) {
@@ -85,6 +93,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** System bar icons and the window background follow the terminal theme. */
+    private fun applyWindowColors(theme: TerminalTheme) {
+        val transparent = android.graphics.Color.TRANSPARENT
+        val style = if (theme.dark) {
+            SystemBarStyle.dark(transparent)
+        } else {
+            SystemBarStyle.light(transparent, transparent)
+        }
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+        window.setBackgroundDrawable(ColorDrawable(theme.background.toArgb()))
     }
 
     override fun onStart() {
