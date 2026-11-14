@@ -390,12 +390,23 @@ impl Host {
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
         let program = self.resolve_program(arg0, path_var, &cwd)?;
+        let exec_mode = self.exec_mode_for(&program);
         let mut config = SpawnConfig::new(&program)
             .arg0(arg0.as_str())
             .args(req.argv[1..].iter().map(String::as_str))
             .cwd(cwd)
-            .exec_mode(self.exec_mode_for(&program));
+            .exec_mode(exec_mode);
         config.env = env.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        if matches!(config.exec_mode, ExecMode::Linker { .. })
+            && !config
+                .env
+                .iter()
+                .any(|(k, _)| k == "TERMUX_EXEC__PROC_SELF_EXE")
+        {
+            config
+                .env
+                .push(("TERMUX_EXEC__PROC_SELF_EXE".into(), program.into()));
+        }
         if let Some(size) = req.pty {
             config.size = WinSize::new(size.rows.max(1), size.cols.max(1));
         }
@@ -454,8 +465,8 @@ impl Host {
     /// Programs inside the app's data directory must run through the system
     /// linker on Android (targetSdk >= 29).
     fn exec_mode_for(&self, program: &Path) -> ExecMode {
-        if cfg!(target_os = "android") && self.layout.needs_linker(program) {
-            ExecMode::system_linker()
+        if cfg!(target_os = "android") {
+            self.layout.exec_mode_for(program)
         } else {
             ExecMode::Direct
         }

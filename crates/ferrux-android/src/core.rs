@@ -108,6 +108,17 @@ pub fn default_shell() -> String {
         .into_owned()
 }
 
+/// Launch specification for the default shell: `[program, arg0, ...args]`,
+/// where `arg0` is empty when `argv[0]` should default to `program`.
+pub fn default_shell_command() -> Vec<String> {
+    let shell = ferrux_env::default_shell(layout());
+    let mut out = Vec::with_capacity(2 + shell.args.len());
+    out.push(shell.program.to_string_lossy().into_owned());
+    out.push(shell.arg0.unwrap_or_default());
+    out.extend(shell.args);
+    out
+}
+
 /// The default session environment as `KEY=VALUE` strings.
 pub fn default_env() -> Vec<String> {
     ferrux_env::build_env(layout(), std::env::vars())
@@ -116,38 +127,38 @@ pub fn default_env() -> Vec<String> {
         .collect()
 }
 
-/// Creates a session; `env` entries are `KEY=VALUE`.
+/// Creates a session with an explicit `arg0` and [`ExecMode`]; `env` entries
+/// are `KEY=VALUE`.
+#[allow(clippy::too_many_arguments)]
 pub fn create_session(
     program: &str,
+    arg0: Option<&str>,
     args: Vec<String>,
     env: Vec<String>,
     cwd: &str,
     rows: u16,
     cols: u16,
+    exec_mode: ExecMode,
 ) -> Result<SessionId, SpawnError> {
-    let shell = ferrux_env::default_shell(layout());
-    let is_default_shell = shell.program.as_os_str() == program;
-    // The default shell gets its login flags (`-l`, or a `-sh` argv[0]) unless
-    // the caller passed arguments of its own.
-    let args = if is_default_shell && args.is_empty() {
-        shell.args.clone()
-    } else {
-        args
-    };
     let mut config = SpawnConfig::new(program)
         .args(args)
-        .size(WinSize::new(rows.max(1), cols.max(1)));
-    if is_default_shell {
-        config.arg0 = shell.arg0.map(Into::into);
+        .size(WinSize::new(rows.max(1), cols.max(1)))
+        .exec_mode(exec_mode);
+    if let Some(arg0) = arg0.filter(|a| !a.is_empty()) {
+        config.arg0 = Some(arg0.into());
     }
     config.env = env
         .into_iter()
         .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.into(), v.into())))
         .collect();
-    // Programs in the app data dir cannot be exec'd directly (W^X); run them
-    // as `linker64 <program>`, like termux-exec does for their children.
-    if layout().needs_linker(std::path::Path::new(program)) {
-        config.exec_mode = ExecMode::system_linker();
+    // Programs in the app data dir run as `linker64 <program>` (W^X);
+    // termux-exec reads this variable so `/proc/self/exe` resolves to the binary.
+    if matches!(config.exec_mode, ExecMode::Linker { .. })
+        && !config
+            .env
+            .iter()
+            .any(|(k, _)| k == "TERMUX_EXEC__PROC_SELF_EXE")
+    {
         config
             .env
             .push(("TERMUX_EXEC__PROC_SELF_EXE".into(), program.into()));
@@ -162,12 +173,39 @@ pub fn create_session(
 mod tests {
     use super::*;
     use ferrux_jni_core::core::{await_change, destroy_session, poll_events, screen_text};
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
     use std::time::{Duration, Instant};
+
+    fn wait_exit_and_screen(id: i64, expected_screen: &str) {
+        let start = Instant::now();
+        let mut seq = 0;
+        let mut events = Vec::new();
+        while !events.iter().any(|e: &String| e.starts_with('X')) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "no exit: {events:?}"
+            );
+            seq = await_change(seq, 100);
+            events.extend(poll_events(id).unwrap());
+        }
+        assert_eq!(events, ["X0"]);
+        let start = Instant::now();
+        while screen_text(id).as_deref() != Some(expected_screen) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{:?}",
+                screen_text(id)
+            );
+            seq = await_change(seq, 100);
+        }
+    }
 
     #[test]
     fn create_session_parses_env_and_runs() {
         let id = create_session(
             "/bin/sh",
+            None,
             vec!["-c".into(), "printf '%s' \"$FOO\"; exit 4".into()],
             vec![
                 "PATH=/usr/bin:/bin".into(),
@@ -177,6 +215,7 @@ mod tests {
             "/",
             5,
             20,
+            ExecMode::Direct,
         )
         .unwrap() as i64;
         let start = Instant::now();
@@ -204,8 +243,37 @@ mod tests {
     }
 
     #[test]
+    fn create_session_passes_explicit_arg0() {
+        let id = create_session(
+            "/bin/sh",
+            Some("-custom-sh"),
+            vec!["-c".into(), "printf '%s' \"$0\"".into()],
+            vec!["PATH=/usr/bin:/bin".into()],
+            "/",
+            5,
+            30,
+            ExecMode::Direct,
+        )
+        .unwrap() as i64;
+        wait_exit_and_screen(id, "-custom-sh");
+        destroy_session(id);
+    }
+
+    #[test]
     fn missing_program_is_an_error() {
-        assert!(create_session("/nonexistent", vec![], vec![], "", 5, 20).is_err());
+        assert!(
+            create_session(
+                "/nonexistent",
+                None,
+                vec![],
+                vec![],
+                "",
+                5,
+                20,
+                ExecMode::Direct
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -213,6 +281,40 @@ mod tests {
         let env = default_env();
         assert!(env.iter().any(|kv| kv.starts_with("HOME=")));
         assert!(env.iter().any(|kv| kv == "TERM=xterm-256color"));
-        assert!(!default_shell().is_empty());
+        let shell = default_shell();
+        assert!(!shell.is_empty());
+        let cmd = default_shell_command();
+        assert!(cmd.len() >= 2);
+        assert_eq!(cmd[0], shell);
+    }
+
+    /// Issue #5: any binary under `$PREFIX` (e.g. python), even via a symlinked
+    /// `/data/user/0/...` path, gets `ExecMode::system_linker()`.
+    #[test]
+    fn prefix_program_gets_linker_exec_mode() {
+        let root = std::env::temp_dir().join(format!("ferrux-android-sym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data_pkg = root.join("data/data/dev.ferrux");
+        let data_files = data_pkg.join("files");
+        let user0_parent = root.join("data/user/0");
+        let user0_pkg = user0_parent.join("dev.ferrux");
+        let user0_files = user0_pkg.join("files");
+
+        std::fs::create_dir_all(data_files.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&user0_parent).unwrap();
+        symlink(&data_pkg, &user0_pkg).unwrap();
+        std::fs::write(data_files.join("usr/bin/python"), "").unwrap();
+
+        let layout = Layout::new(&data_files);
+        assert_eq!(
+            layout.exec_mode_for(&user0_files.join("usr/bin/python")),
+            ExecMode::system_linker()
+        );
+        assert_eq!(
+            layout.exec_mode_for(Path::new(ferrux_env::SYSTEM_SHELL)),
+            ExecMode::Direct
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

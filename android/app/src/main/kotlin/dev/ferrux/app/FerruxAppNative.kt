@@ -46,17 +46,24 @@ object FerruxAppNative {
     /** Program to run for a new interactive session. */
     @JvmStatic external fun defaultShell(): String
 
+    /**
+     * Launch specification for the default interactive shell: `[program, arg0, ...args]`,
+     * where `arg0` is empty when `argv[0]` should default to `program`.
+     */
+    @JvmStatic external fun defaultShellCommand(): Array<String>
+
     /** Default session environment as `KEY=VALUE` strings. */
     @JvmStatic external fun defaultEnv(): Array<String>
 
     /**
-     * Spawns [program] (with [args], which exclude argv[0]) on a new PTY.
+     * Spawns [program] (with optional [arg0] for `argv[0]`, and [args] after it) on a new PTY.
      *
      * @return a session id > 0, usable with [TerminalNative]
      * @throws java.io.IOException if the PTY or process could not be created
      */
     @JvmStatic external fun createSession(
         program: String,
+        arg0: String?,
         args: Array<String>,
         env: Array<String>,
         cwd: String,

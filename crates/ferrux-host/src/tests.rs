@@ -628,3 +628,53 @@ fn exited_pty_releases_our_master() {
     host.close(handle).unwrap();
     drop(s.io);
 }
+
+/// Issue #41: a client spawning `/data/user/0/<pkg>/files/...` when the layout
+/// uses `/data/data/<pkg>/files` (or vice versa) still gets linker exec mode.
+#[test]
+fn symlinked_files_dir_uses_linker_exec_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let t = TempLayout::new("symlink-exec");
+    let data_pkg = t.root.join("data/data/dev.ferrux");
+    let data_files = data_pkg.join("files");
+    let user0_parent = t.root.join("data/user/0");
+    let user0_pkg = user0_parent.join("dev.ferrux");
+    let user0_files = user0_pkg.join("files");
+
+    std::fs::create_dir_all(data_files.join("usr/bin")).unwrap();
+    std::fs::create_dir_all(data_files.join("home")).unwrap();
+    std::fs::create_dir_all(&user0_parent).unwrap();
+    symlink(&data_pkg, &user0_pkg).unwrap();
+
+    let python = data_files.join("usr/bin/python");
+    std::fs::write(&python, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let host = Host::new(Layout::new(&data_files), vec![]);
+    let user0_python = user0_files.join("usr/bin/python");
+    let req = SpawnRequest {
+        argv: vec![user0_python.to_string_lossy().into_owned()],
+        ..Default::default()
+    };
+    let config = host.spawn_config(&req).unwrap();
+    assert_eq!(
+        host.layout().exec_mode_for(&config.program),
+        ExecMode::system_linker()
+    );
+    assert_eq!(
+        host.layout().exec_mode_for(Path::new("/bin/sh")),
+        ExecMode::Direct
+    );
+
+    let user0_host = Host::new(Layout::new(&user0_files), vec![]);
+    let data_req = SpawnRequest {
+        argv: vec![python.to_string_lossy().into_owned()],
+        ..Default::default()
+    };
+    let data_config = user0_host.spawn_config(&data_req).unwrap();
+    assert_eq!(
+        user0_host.layout().exec_mode_for(&data_config.program),
+        ExecMode::system_linker()
+    );
+}
