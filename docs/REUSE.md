@@ -29,7 +29,7 @@ document describes the seam between the two (issue #6).
 
 | Host | Native library in the APK | Calls | Own natives |
 |---|---|---|---|
-| Ferrux app | `libferrux.so` (`ferrux-android`); excludes `libferruxterm.so` | `TerminalNative.load("ferrux")` (via `FerruxAppNative.loadError`) | `dev.ferrux.app.FerruxAppNative`: `init`, `defaultShell`, `defaultEnv`, `createSession` |
+| Ferrux app | `libferrux.so` (`ferrux-android`); excludes `libferruxterm.so` | `TerminalNative.load("ferrux")` (via `FerruxAppNative.loadError`) | `dev.ferrux.app.FerruxAppNative`: `init`, `defaultShell`, `defaultShellCommand`, `defaultEnv`, `createSession` |
 | Ferride | its own cdylib linking `ferrux-jni-core`; excludes `libferruxterm.so` | `TerminalNative.load("<its lib>")` | whatever it needs |
 | Kotlin-only client (e.g. the API v1 `:apiclient-sample`) | `libferruxterm.so` from the `terminal-view` AAR | `TerminalNative.load()` (default) | none |
 
@@ -103,9 +103,9 @@ the `terminal-view` AAR.
 ### `crates/ferrux-android` → `libferrux.so`
 
 This crate holds only the Ferrux-specific natives on
-`dev/ferrux/app/FerruxAppNative`: `init`, `defaultShell`, `defaultEnv` and
-`createSession`. They use `ferrux-env`. The `ExecMode` and `arg0` logic in
-`core::create_session` is unchanged; issue #5 owns it. Its `JNI_OnLoad`
+`dev/ferrux/app/FerruxAppNative`: `init`, `defaultShell`, `defaultShellCommand`,
+`defaultEnv` and `createSession`. They use `ferrux-env`, deriving `ExecMode`
+via `Layout::exec_mode_for` and accepting an explicit `arg0`. Its `JNI_OnLoad`
 registers the terminal table and the app table.
 
 ## Kotlin

@@ -148,10 +148,14 @@ class SessionManager(private val context: Context) {
         val home = env.firstOrNull { it.startsWith("HOME=") }?.substringAfter('=')
             ?.let { File(it) } ?: File(context.filesDir, "home")
         home.mkdirs()
-        // $PREFIX/bin/bash (login shell, via the system linker) once the bootstrap
-        // is installed, else /system/bin/sh; createSession adds the login flags.
+        // $PREFIX/bin/bash -l (via the system linker) once the bootstrap is
+        // installed, else /system/bin/sh with argv[0] = "-sh".
+        val shell = FerruxAppNative.defaultShellCommand()
+        val program = shell[0]
+        val arg0 = shell[1].ifEmpty { null }
+        val args = shell.copyOfRange(2, shell.size)
         return FerruxAppNative.createSession(
-            FerruxAppNative.defaultShell(), emptyArray(), env, cwd ?: home.absolutePath, rows, cols,
+            program, arg0, args, env, cwd ?: home.absolutePath, rows, cols,
         )
     }
 

@@ -44,12 +44,17 @@ pub const APP_NATIVES: &[NativeMethod<'static>] = &[
         fn = natives::default_shell,
     },
     native_method! {
+        static fn default_shell_command() -> JString[],
+        fn = natives::default_shell_command,
+    },
+    native_method! {
         static fn default_env() -> JString[],
         fn = natives::default_env,
     },
     native_method! {
         static fn create_session(
             program: JString,
+            arg0: JString,
             args: JString[],
             environment: JString[],
             cwd: JString,
@@ -113,6 +118,13 @@ mod natives {
         JString::from_str(env, core::default_shell())
     }
 
+    pub fn default_shell_command<'local>(
+        env: &mut Env<'local>,
+        _: JClass<'local>,
+    ) -> JResult<JObjectArray<'local, JString<'local>>> {
+        new_string_array(env, &core::default_shell_command())
+    }
+
     pub fn default_env<'local>(
         env: &mut Env<'local>,
         _: JClass<'local>,
@@ -163,6 +175,7 @@ mod natives {
         env: &mut Env<'_>,
         _: JClass<'_>,
         program: JString<'_>,
+        arg0: JString<'_>,
         args: JObjectArray<'_, JString<'_>>,
         environment: JObjectArray<'_, JString<'_>>,
         cwd: JString<'_>,
@@ -170,11 +183,26 @@ mod natives {
         cols: jint,
     ) -> JResult<jlong> {
         let program = program.try_to_string(env)?;
+        let arg0 = if arg0.is_null() {
+            None
+        } else {
+            Some(arg0.try_to_string(env)?)
+        };
         let args = string_array(env, &args)?;
         let environment = string_array(env, &environment)?;
         let cwd = cwd.try_to_string(env)?;
         let clamp = |v: jint| v.clamp(1, u16::MAX as jint) as u16;
-        match core::create_session(&program, args, environment, &cwd, clamp(rows), clamp(cols)) {
+        let exec_mode = core::layout().exec_mode_for(std::path::Path::new(&program));
+        match core::create_session(
+            &program,
+            arg0.as_deref(),
+            args,
+            environment,
+            &cwd,
+            clamp(rows),
+            clamp(cols),
+            exec_mode,
+        ) {
             Ok(id) => Ok(id as jlong),
             Err(e) => {
                 log::error!("cannot start {program}: {e}");

@@ -11,7 +11,9 @@
 
 pub mod bootstrap;
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+pub use ferrux_pty::ExecMode;
 
 /// Expands to the Android application id as a string literal, so it can be
 /// used in `concat!`.
@@ -130,8 +132,25 @@ impl Layout {
     /// Whether `program` is in the app's data directory, where `execve()` is
     /// denied at targetSdk ≥ 29 (RESEARCH.md §2.1), so it must be started as
     /// `/system/bin/linker64 <program>`.
+    ///
+    /// Canonicalizes both paths so symlinked aliases (e.g. `/data/user/0/…` vs
+    /// `/data/data/…`) and symlinks into or out of `files_dir` classify by
+    /// their target's real location.
     pub fn needs_linker(&self, program: &Path) -> bool {
-        program.starts_with(&self.files_dir)
+        if self.files_dir.as_os_str().is_empty() || program.as_os_str().is_empty() {
+            return false;
+        }
+        resolve_canonical(program).starts_with(resolve_canonical(&self.files_dir))
+    }
+
+    /// How `program` should be executed: through the system linker when it
+    /// resides inside the app's data directory, otherwise directly.
+    pub fn exec_mode_for(&self, program: &Path) -> ExecMode {
+        if self.needs_linker(program) {
+            ExecMode::system_linker()
+        } else {
+            ExecMode::Direct
+        }
     }
 
     /// The termux-exec `LD_PRELOAD` library, if installed.
@@ -143,6 +162,47 @@ impl Layout {
     }
 }
 
+/// Canonicalizes `path`, or its longest existing ancestor with the remaining
+/// components lexically normalized when the target does not exist yet.
+fn resolve_canonical(path: &Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon;
+    }
+    let mut comps: Vec<_> = path.components().collect();
+    let mut tail = Vec::new();
+    while let Some(last) = comps.pop() {
+        tail.push(last);
+        let prefix: PathBuf = comps.iter().collect();
+        if prefix.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(canon) = std::fs::canonicalize(&prefix) {
+            let mut out = canon;
+            for comp in tail.into_iter().rev() {
+                match comp {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::CurDir => {}
+                    c => out.push(c.as_os_str()),
+                }
+            }
+            return out;
+        }
+    }
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
+
 /// The program a new session runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shell {
@@ -152,9 +212,9 @@ pub struct Shell {
     /// `argv[0]`, e.g. `-sh` to request a login shell. Lost when the program
     /// runs through the linker, hence [`Shell::args`].
     pub arg0: Option<String>,
-    /// The program lives in the app data dir and must be run through the
-    /// system linker on targetSdk ≥ 29.
-    pub needs_linker: bool,
+    /// How the program must be started (`ExecMode::system_linker()` inside the
+    /// app data dir on targetSdk ≥ 29, otherwise `ExecMode::Direct`).
+    pub exec_mode: ExecMode,
 }
 
 /// Picks the session shell: `$PREFIX/bin/bash -l` (or `sh -l`) once
@@ -166,7 +226,7 @@ pub fn default_shell(layout: &Layout) -> Shell {
             let program = layout.bin().join(name);
             if program.exists() {
                 return Shell {
-                    needs_linker: layout.needs_linker(&program),
+                    exec_mode: layout.exec_mode_for(&program),
                     program,
                     args: vec!["-l".into()],
                     arg0: None,
@@ -178,7 +238,7 @@ pub fn default_shell(layout: &Layout) -> Shell {
         program: SYSTEM_SHELL.into(),
         args: Vec::new(),
         arg0: Some("-sh".into()),
-        needs_linker: false,
+        exec_mode: ExecMode::Direct,
     }
 }
 
@@ -247,6 +307,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn constants_are_consistent() {
@@ -267,7 +328,7 @@ mod tests {
         assert!(!layout.matches_compiled_prefix());
         let shell = default_shell(&layout);
         assert_eq!(shell.program, Path::new(SYSTEM_SHELL));
-        assert!(!shell.needs_linker);
+        assert_eq!(shell.exec_mode, ExecMode::Direct);
     }
 
     #[test]
@@ -316,8 +377,11 @@ mod tests {
         let shell = default_shell(&layout);
         assert_eq!(shell.program, layout.bin().join("bash"));
         assert_eq!(shell.args, ["-l"]);
-        assert!(shell.needs_linker);
-        assert!(!layout.needs_linker(Path::new(SYSTEM_SHELL)));
+        assert_eq!(shell.exec_mode, ExecMode::system_linker());
+        assert_eq!(
+            layout.exec_mode_for(Path::new(SYSTEM_SHELL)),
+            ExecMode::Direct
+        );
         let env = build_env(&layout, std::iter::empty::<(&str, &str)>());
         let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
         let bash = layout.bin().join("bash").to_string_lossy().into_owned();
@@ -338,5 +402,75 @@ mod tests {
                 .ends_with("libtermux-exec-ld-preload.so")
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Issue #41: `/data/user/0/<pkg>/files/...` vs `/data/data/<pkg>/files/...`
+    /// and symlinks pointing into or out of `files_dir`.
+    #[test]
+    fn exec_mode_canonicalizes_symlinked_files_dir() {
+        let root = std::env::temp_dir().join(format!("ferrux-env-sym-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data_pkg = root.join("data/data/dev.ferrux");
+        let data_files = data_pkg.join("files");
+        let user0_parent = root.join("data/user/0");
+        let user0_pkg = user0_parent.join("dev.ferrux");
+        let user0_files = user0_pkg.join("files");
+
+        std::fs::create_dir_all(data_files.join("usr/bin")).unwrap();
+        std::fs::create_dir_all(&user0_parent).unwrap();
+        symlink(&data_pkg, &user0_pkg).unwrap();
+
+        let python = data_files.join("usr/bin/python");
+        std::fs::write(&python, "").unwrap();
+        symlink("python", data_files.join("usr/bin/python3")).unwrap();
+
+        let outside = root.join("outside_bin");
+        std::fs::write(&outside, "").unwrap();
+        symlink(&outside, data_files.join("usr/bin/ext")).unwrap();
+        symlink(&python, root.join("link_to_python")).unwrap();
+
+        let sibling_files = data_pkg.join("files_other/usr/bin");
+        std::fs::create_dir_all(&sibling_files).unwrap();
+        std::fs::write(sibling_files.join("tool"), "").unwrap();
+
+        for layout in [Layout::new(&data_files), Layout::new(&user0_files)] {
+            assert_eq!(
+                layout.exec_mode_for(&user0_files.join("usr/bin/python")),
+                ExecMode::system_linker()
+            );
+            assert_eq!(
+                layout.exec_mode_for(&data_files.join("usr/bin/python")),
+                ExecMode::system_linker()
+            );
+            assert_eq!(
+                layout.exec_mode_for(&user0_files.join("usr/bin/python3")),
+                ExecMode::system_linker()
+            );
+            assert_eq!(
+                layout.exec_mode_for(&user0_files.join("usr/bin/not_yet_installed")),
+                ExecMode::system_linker()
+            );
+            assert_eq!(
+                layout.exec_mode_for(&root.join("link_to_python")),
+                ExecMode::system_linker(),
+                "symlink outside files_dir targeting inside still needs linker"
+            );
+            assert_eq!(
+                layout.exec_mode_for(&data_files.join("usr/bin/ext")),
+                ExecMode::Direct,
+                "symlink inside files_dir targeting outside runs directly"
+            );
+            assert_eq!(
+                layout.exec_mode_for(&user0_files.join("usr/bin/../../../outside_bin")),
+                ExecMode::Direct
+            );
+            assert_eq!(
+                layout.exec_mode_for(&sibling_files.join("tool")),
+                ExecMode::Direct
+            );
+            assert_eq!(layout.exec_mode_for(Path::new("")), ExecMode::Direct);
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
