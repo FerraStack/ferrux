@@ -13,7 +13,7 @@ BRANCH=ci-screenshots
 SHA="${HEAD_SHA:-${GITHUB_SHA:-unknown}}"
 MARKER='<!-- ferra-screenshots -->'
 DEST="pr-$PR/$RUN"
-KEEP_RUNS="${KEEP_RUNS:-3}"   # older runs of this PR are pruned
+KEEP_RUNS="${KEEP_RUNS:-1}"   # older runs of this PR are pruned
 PER_ROW=3
 
 shopt -s nullglob
@@ -31,7 +31,9 @@ git -C "$work" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/
 
 # Retry in case another run pushed to the branch concurrently.
 for attempt in 1 2 3 4 5; do
+  head=""
   if git -C "$work" fetch -q --depth 1 origin "$BRANCH" 2>/dev/null; then
+    head="$(git -C "$work" rev-parse FETCH_HEAD)"
     git -C "$work" checkout -q -B "$BRANCH" FETCH_HEAD
   else
     git -C "$work" checkout -q --orphan "$BRANCH"
@@ -43,9 +45,16 @@ for attempt in 1 2 3 4 5; do
     git -C "$work" rm -rq --ignore-unmatch "pr-$PR/$old" || rm -rf "${work:?}/pr-$PR/$old"
   done
   git -C "$work" add -A "pr-$PR"
-  git -C "$work" commit -qm "screenshots: PR #$PR run $RUN"
-  if git -C "$work" push -q origin "$BRANCH"; then
-    break
+  tree="$(git -C "$work" write-tree)"
+  commit="$(git -C "$work" commit-tree "$tree" -m "screenshots: PR #$PR run $RUN")"
+  if [ -n "$head" ]; then
+    if git -C "$work" push -q --force-with-lease="$BRANCH:$head" origin "$commit:refs/heads/$BRANCH"; then
+      break
+    fi
+  else
+    if git -C "$work" push -q origin "$commit:refs/heads/$BRANCH"; then
+      break
+    fi
   fi
   echo "push failed (attempt $attempt), retrying"
   git -C "$work" reset -q --hard
