@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # For retries: select the existing release tag, not a branch.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: "30.0.16248370"
+
+# Third-party actions are pinned by commit SHA (tag in the comment).
+jobs:
+  version:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require a version tag matching android/app/build.gradle.kts
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          ref = os.environ.get("GITHUB_REF", "")
+          match = re.fullmatch(
+              r"refs/tags/v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+              r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)",
+              ref,
+          )
+          if not match:
+              sys.exit(f"::error::Release requires a tag such as v1.0.0 or v1.0.0-rc.1, not {ref!r}.")
+          version = match[1]
+          build_file = Path("android/app/build.gradle.kts").read_text(encoding="utf-8")
+          app_version = re.search(r'^\s*versionName\s*=\s*"([^"]+)"', build_file, re.MULTILINE)
+          if app_version is None or app_version[1] != version:
+              found = app_version[1] if app_version else "<missing>"
+              sys.exit(
+                  f"::error::Tag version {version} must match versionName ({found}) in android/app/build.gradle.kts."
+              )
+          print(f"Release version: {version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"version={version}\n")
+          PY
+      - name: Tags must point at a commit on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main; refusing to release"; exit 1; }
+
+  build:
+    name: Build release APK and app bundle
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: >-
+            platform-tools
+            platforms;android-37.0
+            build-tools;36.0.0
+            ndk;${{ env.NDK_VERSION }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: android
+      # The prebuilt download comes from GitHub releases, which intermittently
+      # answers 504; when it does, build the same version from crates.io instead
+      # of failing the job (install-action's cargo-binstall fallback can't).
+      - name: Install cargo-ndk (prebuilt)
+        id: cargo-ndk
+        continue-on-error: true
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-ndk@4.1.2
+      - name: Install cargo-ndk (from source, prebuilt download failed)
+        if: steps.cargo-ndk.outcome == 'failure'
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build native libraries
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
+          scripts/build-native.sh
+      - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
+      - name: Configure release signing
+        id: signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" ]]; then
+            for name in STORE_PASSWORD KEY_PASSWORD; do
+              if [[ -z "${!name}" ]]; then
+                echo "::error::ANDROID_KEYSTORE_BASE64 is set but ${name} is missing."
+                exit 1
+              fi
+            done
+            keystore="$RUNNER_TEMP/ferrux-release.jks"
+            umask 077
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+            echo "gradle_args=" >> "$GITHUB_OUTPUT"
+            echo "Signing release artifacts with production keystore."
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; falling back to debug key signing."
+            echo "gradle_args=-Pferrux.signReleaseWithDebugKey=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build release APK and AAB
+        working-directory: android
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        # Keep signing credentials out of Gradle's configuration cache.
+        run: >-
+          ./gradlew --max-workers=4 :app:assembleRelease :app:bundleRelease
+          -Pferrux.skipCargo=true ${{ steps.signing.outputs.gradle_args }}
+          --no-configuration-cache --stacktrace --console=plain
+      - name: Verify signatures and prepare checksums
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          aab=android/app/build/outputs/bundle/release/app-release.aab
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+          jarsigner -verify "$aab"
+          mkdir -p dist
+          cp "$apk" "dist/ferrux-${VERSION}.apk"
+          cp "$aab" "dist/ferrux-${VERSION}.aab"
+          cd dist
+          sha256sum -- "ferrux-${VERSION}.apk" "ferrux-${VERSION}.aab" > SHA256SUMS
+      - name: Save release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove signing key
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/ferrux-release.jks"
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist
+      - name: Publish APK, app bundle, and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS
+          # Never overwrite an existing release's binaries on a rerun.
+          args=(--verify-tag --generate-notes --title "Ferrux ${TAG}")
+          if [[ "$TAG" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG" "ferrux-${VERSION}.apk" "ferrux-${VERSION}.aab" SHA256SUMS "${args[@]}"

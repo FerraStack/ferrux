@@ -24,13 +24,37 @@ android {
         minSdk = 30
         targetSdk = 36
         versionCode = 1
-        versionName = "0.0.1"
+        versionName = "1.0.0"
+    }
+
+    val releaseKeystoreFile = System.getenv("KEYSTORE_PATH")
+        ?.takeIf { it.isNotBlank() }
+        ?.let(::file)
+        ?.takeIf { it.isFile }
+    val signReleaseWithDebugKey = providers.gradleProperty("ferrux.signReleaseWithDebugKey")
+        .map { it.isEmpty() || it.toBoolean() }
+        .getOrElse(false)
+
+    signingConfigs {
+        create("release") {
+            if (releaseKeystoreFile != null) {
+                storeFile = releaseKeystoreFile
+            }
+            storePassword = System.getenv("STORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "upload"
+            keyPassword = System.getenv("KEY_PASSWORD")
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            } else if (signReleaseWithDebugKey) {
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 
