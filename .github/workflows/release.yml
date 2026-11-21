@@ -114,30 +114,23 @@ jobs:
           scripts/build-native.sh
       - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
       - name: Configure release signing
-        id: signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" ]]; then
-            for name in STORE_PASSWORD KEY_PASSWORD; do
-              if [[ -z "${!name}" ]]; then
-                echo "::error::ANDROID_KEYSTORE_BASE64 is set but ${name} is missing."
-                exit 1
-              fi
-            done
-            keystore="$RUNNER_TEMP/ferrux-release.jks"
-            umask 077
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-            echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
-            echo "gradle_args=" >> "$GITHUB_OUTPUT"
-            echo "Signing release artifacts with production keystore."
-          else
-            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set; falling back to debug key signing."
-            echo "gradle_args=-Pferrux.signReleaseWithDebugKey=true" >> "$GITHUB_OUTPUT"
-          fi
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_STORE_PASSWORD ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required release signing secret: ${name}."
+              exit 1
+            fi
+          done
+          keystore="$RUNNER_TEMP/ferrux-release.jks"
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          echo "KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+          echo "Signing release artifacts with production keystore."
       - name: Build release APK and AAB
         working-directory: android
         env:
@@ -147,14 +140,16 @@ jobs:
         # Keep signing credentials out of Gradle's configuration cache.
         run: >-
           ./gradlew --max-workers=4 :app:assembleRelease :app:bundleRelease
-          -Pferrux.skipCargo=true ${{ steps.signing.outputs.gradle_args }}
+          -Pferrux.skipCargo=true
           --no-configuration-cache --stacktrace --console=plain
-      - name: Verify signatures and prepare checksums
+      - name: Verify alignment, signatures, and prepare checksums
         run: |
           set -euo pipefail
+          bt="$ANDROID_SDK_ROOT/build-tools/36.0.0"
           apk=android/app/build/outputs/apk/release/app-release.apk
           aab=android/app/build/outputs/bundle/release/app-release.aab
-          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --verbose "$apk"
+          "$bt/zipalign" -c -P 16 -v 4 "$apk"
+          "$bt/apksigner" verify --verbose "$apk"
           jarsigner -verify "$aab"
           mkdir -p dist
           cp "$apk" "dist/ferrux-${VERSION}.apk"
@@ -166,6 +161,13 @@ jobs:
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save R8 mapping
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-mapping-${{ github.run_id }}-${{ github.run_attempt }}
+          path: android/app/build/outputs/mapping/release/mapping.txt
           if-no-files-found: error
           retention-days: 14
       - name: Remove signing key

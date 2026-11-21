@@ -1,17 +1,22 @@
 # Ferrux
 
+[![CI](https://github.com/FerraStack/ferrux/actions/workflows/ci.yml/badge.svg)](https://github.com/FerraStack/ferrux/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/FerraStack/ferrux)](https://github.com/FerraStack/ferrux/releases/latest)
+
 Ferrux is a terminal emulator and Linux environment for Android, in the spirit of
 [Termux](https://termux.dev), built as a **Rust core with a thin Kotlin shell**.
 It is part of [FerraStack](https://github.com/FerraStack). Ferride, the FerraStack
-code editor, reuses Ferrux's terminal crates and will talk to Ferrux over a Binder
+code editor, reuses Ferrux's terminal crates and talks to Ferrux over a Binder
 service.
 
-> **Status: early development (milestones M1–M2, M3 in progress).** On first run
-> the app downloads a bootstrap (bash, apt, coreutils) into
-> `/data/data/dev.ferrux/files/usr`; sessions run `bash` through the system linker,
-> and `pkg install` works against the Ferrux repository. See
-> [docs/PACKAGES.md](docs/PACKAGES.md) for packages and
-> [docs/RESEARCH.md](docs/RESEARCH.md) for the design and roadmap.
+Download the latest signed APK from
+[GitHub Releases](https://github.com/FerraStack/ferrux/releases/latest). On first
+run the app downloads a bootstrap (bash, apt, coreutils) into
+`/data/data/dev.ferrux/files/usr`; sessions run `bash` through the system linker,
+and `pkg install` installs packages from
+[FerraStack/ferrux-packages](https://github.com/FerraStack/ferrux-packages). See
+[docs/PACKAGES.md](docs/PACKAGES.md) for packages and
+[docs/RESEARCH.md](docs/RESEARCH.md) for the architecture and design notes.
 
 ## Architecture
 
@@ -252,18 +257,18 @@ To build the native library separately, run `scripts/build-native.sh`. Then pass
   and CTRL steps type with the real soft keyboard, but only once the input method
   reports it is shown and serving the terminal. The API 35 screenshots
   are pushed to the `ci-screenshots` branch and posted in one PR comment, which is
-  updated on every run. Only the last 3 runs are kept, and the
-  `screenshots-cleanup` workflow deletes them once the PR closes.
+  updated on every run. Older runs for the same PR are pruned so only the latest
+  run is retained on `ci-screenshots`.
 
 ## Roadmap
 
-See [docs/RESEARCH.md §12](docs/RESEARCH.md#12-mvp-milestones). Next up:
-
-- **M3:** bootstrap and packages via linker64 + termux-exec
-  ([docs/PACKAGES.md](docs/PACKAGES.md); packages are built in
-  [FerraStack/ferrux-packages](https://github.com/FerraStack/ferrux-packages)).
-- **M4:** selection, copy/paste, URLs, settings.
-- **M5:** the Ferride API, designed in [docs/API.md](docs/API.md).
+Milestones M1–M5 from [docs/RESEARCH.md §12](docs/RESEARCH.md#12-mvp-milestones)
+shipped in v1.0.0 (core terminal and sessions, bootstrap and packages in
+[FerraStack/ferrux-packages](https://github.com/FerraStack/ferrux-packages),
+selection/links/settings, and the Ferride Binder API in
+[docs/API.md](docs/API.md)). Future work includes shared API sessions
+(`listSessions` / `attachSession`), custom extra-keys JSON layouts, and
+evaluating the wgpu renderer (`ferrux-render`).
 
 ## License
 
